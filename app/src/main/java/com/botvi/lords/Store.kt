@@ -77,7 +77,7 @@ object Store {
 
     @Synchronized
     fun addDump(payload: ByteArray, parsed: Int) {
-        dumps.addLast("[" + fmt.format(Date()) + "] len=" + payload.size + " parsed=" + parsed + "\n" + PacketDump.hex(payload))
+        dumps.addLast("[" + fmt.format(Date()) + "] len=" + payload.size + " id=" + PacketNames.label(PacketNames.idOf(payload)) + " parsed=" + parsed + "\n" + PacketDump.hex(payload))
         while (dumps.size > 200) dumps.removeFirst()
     }
 
@@ -132,7 +132,8 @@ object Store {
             sb.append(k.padEnd(9)).append(' ')
                 .append(v.count.toString().padStart(6)).append(' ')
                 .append((v.bytes / maxOf(v.count, 1L)).toString().padStart(8)).append(' ')
-                .append(v.parsed.toString().padStart(7)).append(if (v.parsed == 0L) "  <- غير مفكوك" else "").append('\n')
+                .append(v.parsed.toString().padStart(7)).append(if (v.parsed == 0L) "  <- غير مفكوك" else "")
+                .append("  ").append(PacketNames.labelForKey(k)).append('\n')
         }
         return sb.toString()
     }
@@ -142,7 +143,7 @@ object Store {
             .sortedByDescending { it.value.bytes }.take(5)
         if (un.isEmpty()) return ""
         return "\nحزم غير مفكوكة (الأكثر): " + un.joinToString(" | ") {
-            "${it.key} ×${it.value.count} (~${it.value.bytes / it.value.count}B)"
+            "${it.key} ${PacketNames.labelForKey(it.key)} ×${it.value.count} (~${it.value.bytes / it.value.count}B)"
         }
     }
 
