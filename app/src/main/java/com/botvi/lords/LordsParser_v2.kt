@@ -115,7 +115,8 @@ object PacketParser {
     private const val GIFT_LIST_HEADER = 13
     private const val GIFT_ENTRY_SIZE = 33
     private const val MIGHT_HEADER = 5
-    private const val MIGHT_ENTRY_SIZE = 48
+    private const val MIGHT_ENTRY_SIZE = 49   // was 48: entries drifted by 1 byte each
+    private const val MIGHT_MIN_ENTRY = 48       // bytes actually read from each entry
 
     fun parse(p: ByteArray, nowSec: Long = System.currentTimeMillis() / 1000): List<ParsedPacket> {
         if (p.size < 3) return emptyList()
@@ -154,9 +155,14 @@ object PacketParser {
 
         if (op0 == 0x06 && op1 == 0x0B && op2 == 0x00 && p.size >= MIGHT_HEADER) {
             val count = p[4].toInt() and 0xFF
+            // Observed: 1230-byte packet = 5 + 25*49 and 740 = 5 + 15*49, so the stride is 49, not 48.
+            // Derive it from the packet itself when it divides evenly, otherwise use the default.
+            val body = p.size - MIGHT_HEADER
+            val stride = if (count > 0 && body % count == 0 && body / count >= MIGHT_MIN_ENTRY) body / count
+                         else MIGHT_ENTRY_SIZE
             for (i in 0 until count) {
-                val o = MIGHT_HEADER + i * MIGHT_ENTRY_SIZE
-                if (o + MIGHT_ENTRY_SIZE > p.size) break
+                val o = MIGHT_HEADER + i * stride
+                if (o + MIGHT_MIN_ENTRY > p.size) break
                 out.add(
                     MightEntry(
                         name = cstr(p, o + 10, 12),
