@@ -56,6 +56,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Store.init(applicationContext)
         val prefs = getSharedPreferences("lc", MODE_PRIVATE)
 
         val root = LinearLayout(this).apply {
@@ -105,6 +106,28 @@ class MainActivity : Activity() {
             }
             startActivityForResult(i, REQ_EXPORT)
         })
+        root.addView(btn("📈 تصدير سجل القوة (CSV)") {
+            val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "text/csv"
+                putExtra(Intent.EXTRA_TITLE, "LordsCapture_might_history_${System.currentTimeMillis() / 1000}.csv")
+            }
+            startActivityForResult(i, REQ_HIST)
+        })
+        val dumpBtn = btn("🔍 تفريغ الحزم: متوقف") {}
+        dumpBtn.setOnClickListener {
+            Store.dumpOn = !Store.dumpOn
+            dumpBtn.text = "🔍 تفريغ الحزم: " + (if (Store.dumpOn) "يعمل" else "متوقف")
+        }
+        root.addView(dumpBtn)
+        root.addView(btn("📄 تصدير التفريغ (TXT)") {
+            val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TITLE, "LordsCapture_dump_${System.currentTimeMillis() / 1000}.txt")
+            }
+            startActivityForResult(i, REQ_DUMP)
+        })
         root.addView(btn("🗑 مسح البيانات") {
             Store.clear()
             refresh()
@@ -143,6 +166,7 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        Store.save()
         handler.removeCallbacks(ticker)
         super.onPause()
     }
@@ -150,10 +174,15 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_EXPORT && resultCode == RESULT_OK) {
+        if ((requestCode == REQ_EXPORT || requestCode == REQ_DUMP || requestCode == REQ_HIST) && resultCode == RESULT_OK) {
             val uri = data?.data ?: return
             try {
-                contentResolver.openOutputStream(uri)?.use { it.write(Store.csv().toByteArray(Charsets.UTF_8)) }
+                val text = when (requestCode) {
+                    REQ_DUMP -> Store.dumpText()
+                    REQ_HIST -> Store.historyCsv()
+                    else -> Store.csv()
+                }
+                contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
                 Toast.makeText(this, "تم الحفظ", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 Toast.makeText(this, "فشل الحفظ: ${e.message}", Toast.LENGTH_LONG).show()
@@ -163,5 +192,7 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQ_EXPORT = 42
+        private const val REQ_DUMP = 43
+        private const val REQ_HIST = 44
     }
 }

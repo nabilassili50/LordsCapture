@@ -16,6 +16,11 @@ class CaptureService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        Store.init(applicationContext)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stopCapture()
@@ -80,6 +85,8 @@ class CaptureService : Service() {
         Store.frames++
         val items = PacketParser.parse(payload)
         for (p in items) Store.add(p)
+        Store.recordOp(payload, items.size)
+        if (Store.dumpOn) Store.addDump(payload, items.size)
         if (items.isNotEmpty()) Store.log("parsed ${items.size} item(s) from a ${payload.size}-byte packet")
         for (p in items) {
             if (p is CastlePopup) Store.log("castle popup ${p.x},${p.y} [${p.guildFullName}] vip=${p.vip} rank=${p.guildRank} might=${p.might} kills=${p.kills}")
@@ -94,6 +101,7 @@ class CaptureService : Service() {
         worker?.interrupt()
         worker = null
         Store.status = "متوقف"
+        Store.save()
     }
 
     override fun onDestroy() {
