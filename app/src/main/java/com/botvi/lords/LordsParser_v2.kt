@@ -142,8 +142,8 @@ object PacketParser {
     private const val MIGHT_MIN_ENTRY = 48       // bytes actually read from each entry
     private const val POPUP_MIN_SIZE = 60        // 3-byte header + packed CastlePopupInfo (57 bytes)
     private const val OBJ_PLAYER = 8
-    private const val MAX_REALM = 120
-    private const val MAX_CASTLE_LEVEL = 25
+    private const val MAX_REALM = 9999          // real kingdoms go up to 4 digits (seen: 1258)
+    private const val MAX_CASTLE_LEVEL = 30
     private const val MAP_OBJ_MIN = 34            // GUID(4)+type(1)+name(13)+guild(3)+realm(2)+level(1)+flags/title/realmGuild(9)
     private const val MAP_OBJ_STEP = 38           // same step the C++ parser uses after a hit
     private val MAP_OPS = setOf(0x02, 0x03, 0x0F, 0x0D, 0x0E, 0x09, 0x18, 0x17, 0x16)
