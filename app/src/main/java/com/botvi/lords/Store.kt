@@ -259,7 +259,16 @@ object Store {
     const val INACTIVE_DAYS = 3
     const val ALERT_PCT = 5.0
 
-    private class Agg { var n = 0; var withMight = 0; var total = 0L; var kills = 0L; var lvl = 0L }
+    private class Agg {
+        var n = 0; var withMight = 0; var total = 0L; var kills = 0L; var lvl = 0L
+        var sx = 0L; var sy = 0L
+        var minX = Int.MAX_VALUE; var maxX = Int.MIN_VALUE; var minY = Int.MAX_VALUE; var maxY = Int.MIN_VALUE
+    }
+
+    class Pt(val x: Int, val y: Int, val tag: String)
+
+    @Synchronized
+    fun alliancePoints(): List<Pt> = mapPlayers.values.map { Pt(it.v.x, it.v.y, it.v.guild) }
     private class Chg(val name: String, val dm: Long, val dk: Long, val prev: Long, val total: Long)
 
     private fun fmtNum(v: Long): String {
@@ -328,17 +337,29 @@ object Store {
                     val a = g.getOrPut(tag) { Agg() }
                     a.n++
                     a.lvl += c.level
+                    a.sx += c.x; a.sy += c.y
+                    a.minX = minOf(a.minX, c.x); a.maxX = maxOf(a.maxX, c.x)
+                    a.minY = minOf(a.minY, c.y); a.maxY = maxOf(a.maxY, c.y)
                     val pop = popups[k]?.v
                     val mg = pop?.might ?: byName[c.name.take(12)]?.might
                     val kl = pop?.kills ?: byName[c.name.take(12)]?.kills
                     if (mg != null) { a.withMight++; a.total += mg; a.kills += (kl ?: 0L) }
                 }
-                val rows = g.entries.filter { ok(it.key) || ok(full[it.key] ?: "") }.sortedByDescending { it.value.total }
-                sb.append("التحالفات: ").append(rows.size).append('\n')
+                val rows = g.entries.filter { ok(it.key) || ok(full[it.key] ?: "") }
+                    .sortedWith(compareByDescending<Map.Entry<String, Agg>> { it.value.n }.thenByDescending { it.value.total })
+                sb.append("التحالفات: ").append(rows.size).append(" | قلاع ظاهرة: ").append(mapPlayers.size).append('\n')
                 for ((tag, a) in rows.take(limit)) {
-                    val avg = if (a.withMight > 0) a.total / a.withMight else 0L
+                    val cx = Math.round(a.sx.toDouble() / a.n)
+                    val cy = Math.round(a.sy.toDouble() / a.n)
                     val lv = String.format(Locale.US, "%.1f", a.lvl.toDouble() / maxOf(a.n, 1))
-                    sb.append("[$tag]${full[tag]?.let { " $it" } ?: ""} قلاع ${a.n} (بقوة معروفة ${a.withMight}) | المجموع ${fmtNum(a.total)} | المتوسط ${fmtNum(avg)} | قتلى ${fmtNum(a.kills)} | م$lv\n")
+                    sb.append("\n[$tag]").append(full[tag]?.let { " $it" } ?: "").append('\n')
+                    sb.append("  أعضاء ظاهرون ${a.n} | المركز ($cx,$cy) | x ${a.minX}–${a.maxX} y ${a.minY}–${a.maxY}\n")
+                    if (a.withMight == 0) {
+                        sb.append("  القوة: غير معروفة (اضغط على قلاعهم) | م$lv\n")
+                    } else {
+                        val avg = a.total / a.withMight
+                        sb.append("  القوة ${fmtNum(a.total)} (${a.withMight}/${a.n} معروفة) | متوسط ${fmtNum(avg)} | قتلى ${fmtNum(a.kills)} | م$lv\n")
+                    }
                 }
             }
             MODE_INACTIVE -> {

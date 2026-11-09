@@ -46,6 +46,8 @@ class MainActivity : Activity() {
     private lateinit var extrasTv: TextView
     private lateinit var coverTv: TextView
     private lateinit var reportTv: TextView
+    private lateinit var allianceMap: AllianceMapView
+    private var lastMapCount = -1
     private lateinit var searchEt: EditText
     private lateinit var prefixEt: EditText
     private lateinit var portEt: EditText
@@ -248,6 +250,12 @@ class MainActivity : Activity() {
         }
         root.addView(grid)
 
+        // alliance map card
+        val mapCard = card("خريطة التحالفات")
+        allianceMap = AllianceMapView(this).apply { layoutParams = lp(MATCH, dp(320), 0f, 0, 0, 0, 0) }
+        mapCard.addView(allianceMap)
+        root.addView(mapCard)
+
         // control card
         val ctl = card()
         prefixEt = field("192.243.", prefs.getString("prefix", "192.243.") ?: "192.243.", false)
@@ -446,6 +454,11 @@ class MainActivity : Activity() {
         val vals = listOf(st.frames.toString(), st.might.toString(), st.castles.toString(),
             st.popups.toString(), st.gifts.toString(), st.changed.toString())
         for (i in vals.indices) tileVals[i].text = vals[i]
+        if (forceNow || st.castles != lastMapCount) {
+            lastMapCount = st.castles
+            allianceMap.points = Store.alliancePoints()
+            allianceMap.invalidate()
+        }
         coverTv.text = "حزم الخريطة: ${st.mapFrames} • نوافذ القلاع: ${st.popupFrames}\n" +
             "تغطية الخريطة: ${st.covered}/${st.blocks} • قلاع تحتاج فحص: ${st.due}"
 
