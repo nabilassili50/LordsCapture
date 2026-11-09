@@ -47,7 +47,11 @@ class MainActivity : Activity() {
     private lateinit var coverTv: TextView
     private lateinit var reportTv: TextView
     private lateinit var allianceMap: AllianceMapView
-    private var lastMapCount = -1
+    private var lastMapKey = -1L
+    private lateinit var fortEt: EditText
+    private lateinit var chipRowAl: LinearLayout
+    private lateinit var mapInfoTv: TextView
+    private val allianceChips = ArrayList<Pair<String, Button>>()
     private lateinit var searchEt: EditText
     private lateinit var prefixEt: EditText
     private lateinit var portEt: EditText
@@ -253,7 +257,35 @@ class MainActivity : Activity() {
         // alliance map card
         val mapCard = card("خريطة التحالفات")
         allianceMap = AllianceMapView(this).apply { layoutParams = lp(MATCH, dp(320), 0f, 0, 0, 0, 0) }
+        chipRowAl = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        mapCard.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 8)
+            addView(chipRowAl)
+        })
+        allianceMap.onSelect = { updateMapInfo() }
         mapCard.addView(allianceMap)
+        mapInfoTv = tv("", 12f, cText).apply {
+            setTextIsSelectable(true)
+            setLineSpacing(0f, 1.15f)
+            setPadding(dp(2), dp(8), dp(2), dp(4))
+        }
+        mapCard.addView(mapInfoTv)
+        updateMapInfo()
+        mapCard.addView(label("نوع الحصن (رقم) — شاهد قائمة 🏯 حصون لمعرفة الرقم"))
+        Store.fortType = prefs.getInt("fort_type", -1)
+        fortEt = field("مثال: 12", if (Store.fortType >= 0) Store.fortType.toString() else "", true)
+        fortEt.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val v = s?.toString()?.trim()?.toIntOrNull() ?: -1
+                Store.fortType = v
+                prefs.edit().putInt("fort_type", v).apply()
+                refresh(true)
+            }
+        })
+        mapCard.addView(fortEt)
         root.addView(mapCard)
 
         // control card
@@ -297,7 +329,7 @@ class MainActivity : Activity() {
         val chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val defs = listOf(
             "👑 القوة" to Store.MODE_POWER, "🏰 قلاع" to Store.MODE_CASTLES, "🎁 هدايا" to Store.MODE_GIFTS,
-            "🛡 تحالفات" to Store.MODE_ALLIANCE, "💤 خاملون" to Store.MODE_INACTIVE, "📊 تغيّرات" to Store.MODE_CHANGES
+            "🛡 تحالفات" to Store.MODE_ALLIANCE, "🏯 حصون" to Store.MODE_FORTS, "💤 خاملون" to Store.MODE_INACTIVE, "📊 تغيّرات" to Store.MODE_CHANGES
         )
         for ((t, m) in defs) {
             val b = chip(t) { viewMode = m; restyleModes(); refresh(true) }
@@ -434,6 +466,44 @@ class MainActivity : Activity() {
         refresh(true)
     }
 
+    private fun pickAlliance(tag: String) {
+        allianceMap.selected = if (allianceMap.selected == tag) null else tag
+        allianceMap.invalidate()
+        updateMapInfo()
+    }
+
+    private fun rebuildAllianceChips() {
+        chipRowAl.removeAllViews()
+        allianceChips.clear()
+        val counts = HashMap<String, Int>()
+        for (p in allianceMap.points) if (p.tag.isNotEmpty()) counts[p.tag] = (counts[p.tag] ?: 0) + 1
+        for ((tag, n) in counts.entries.sortedByDescending { it.value }.take(15)) {
+            val b = chip("$tag $n") { pickAlliance(tag) }
+            allianceChips.add(tag to b)
+            chipRowAl.addView(b)
+        }
+    }
+
+    private fun updateMapInfo() {
+        val sel = allianceMap.selected
+        for ((t, b) in allianceChips) styleChip(b, t == sel)
+        if (sel == null) {
+            mapInfoTv.text = "اضغط اسم تحالف (فوق الخريطة أو عليها) لإظهار أماكنه وإحداثياته"
+            return
+        }
+        val mine = allianceMap.points.filter { it.tag == sel }
+        if (mine.isEmpty()) { mapInfoTv.text = "[$sel] لا قلاع ظاهرة"; return }
+        val xs = mine.map { it.x }.sorted(); val ys = mine.map { it.y }.sorted()
+        val sb = StringBuilder("[$sel] ${mine.size} قلعة\n")
+        sb.append("المركز (${xs[xs.size / 2]},${ys[ys.size / 2]}) | x ${xs.first()}–${xs.last()} | y ${ys.first()}–${ys.last()}\n")
+        val fs = allianceMap.forts.filter { it.tag == sel }
+        if (fs.isNotEmpty()) sb.append("حصون ${fs.size}: " + fs.take(12).joinToString(" ") { "(${it.x},${it.y})" } + "\n")
+        sb.append('\n')
+        for (p in mine.sortedWith(compareBy({ it.x }, { it.y })).take(40)) sb.append("${p.name} (${p.x},${p.y})\n")
+        if (mine.size > 40) sb.append("… +${mine.size - 40}")
+        mapInfoTv.text = sb.toString()
+    }
+
     private fun refresh(forceNow: Boolean = false) {
         if (!::logTv.isInitialized) return
         val v = Store.version
@@ -454,10 +524,14 @@ class MainActivity : Activity() {
         val vals = listOf(st.frames.toString(), st.might.toString(), st.castles.toString(),
             st.popups.toString(), st.gifts.toString(), st.changed.toString())
         for (i in vals.indices) tileVals[i].text = vals[i]
-        if (forceNow || st.castles != lastMapCount) {
-            lastMapCount = st.castles
+        val mapKey = st.castles * 1_000_003L + Store.objCount() * 101L + Store.fortType
+        if (forceNow || mapKey != lastMapKey) {
+            lastMapKey = mapKey
             allianceMap.points = Store.alliancePoints()
+            allianceMap.forts = Store.fortPoints()
             allianceMap.invalidate()
+            rebuildAllianceChips()
+            updateMapInfo()
         }
         coverTv.text = "حزم الخريطة: ${st.mapFrames} • نوافذ القلاع: ${st.popupFrames}\n" +
             "تغطية الخريطة: ${st.covered}/${st.blocks} • قلاع تحتاج فحص: ${st.due}"

@@ -13,12 +13,14 @@ object Store {
     private val received = ArrayList<Stamped<GiftReceived>>()
     private val mapPlayers = LinkedHashMap<Int, Stamped<MapPlayer>>()   // castles seen on the map, by x/y
     private val popups = LinkedHashMap<Int, Stamped<CastlePopup>>()     // castle tap popups, by x/y
+    private val mapObjs = LinkedHashMap<Int, Stamped<MapObject>>()      // non-player map objects (fortresses...), by x/y
     private val logs = ArrayDeque<String>()
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     @Volatile var status: String = "متوقف"
     @Volatile var frames: Long = 0
     @Volatile var dumpOn: Boolean = false
+    @Volatile var fortType: Int = -1         // object type id the user marked as "fortress" (-1 = not chosen)
     @Volatile var version: Long = 0          // bumped on every change, so the UI can skip redraws
     @Volatile var lastUpload: String = ""
     private var dirtyData = false
@@ -200,6 +202,10 @@ object Store {
                 val c = s.v
                 sb.append("C\t${s.at}\t${c.x}\t${c.y}\t${esc(c.guildFullName)}\t${c.vip}\t${c.guildRank}\t${c.might}\t${c.kills}\n")
             }
+            for (s in mapObjs.values) {
+                val o = s.v
+                sb.append("X\t${s.at}\t${o.x}\t${o.y}\t${o.type}\t${esc(o.name)}\t${esc(o.guild)}\n")
+            }
             for ((name, list) in mightHist) for (pt in list) sb.append("H\t${esc(name)}\t${pt.at}\t${pt.might}\t${pt.kills}\n")
             for ((k, v) in ops) sb.append("O\t$k\t${v.count}\t${v.bytes}\t${v.parsed}\n")
             val tmp = File(d, "store.tmp")
@@ -237,6 +243,10 @@ object Store {
                                 CastlePopup(x, y, unesc(t[4]), t[5].toInt(), t[6].toInt(), t[7].toLong(), t[8].toLong())))
                             ScanPlanner.onPopup(x, y, t[1].toLong() * 1000)
                         }
+                        "X" -> {
+                            val x = t[2].toInt(); val y = t[3].toInt()
+                            mapObjs.put(key(x, y), Stamped(t[1].toLong(), MapObject(x, y, t[4].toInt(), unesc(t[5]), unesc(t[6]))))
+                        }
                         "H" -> mightHist.getOrPut(unesc(t[1])) { ArrayList() }.add(MightPoint(t[2].toLong(), t[3].toLong(), t[4].toLong()))
                         "O" -> { val st = OpStat(); st.count = t[2].toLong(); st.bytes = t[3].toLong(); st.parsed = t[4].toLong(); ops[t[1]] = st }
                         else -> {}
@@ -256,6 +266,7 @@ object Store {
     const val MODE_ALLIANCE = 3
     const val MODE_INACTIVE = 4
     const val MODE_CHANGES = 5
+    const val MODE_FORTS = 6
     const val INACTIVE_DAYS = 3
     const val ALERT_PCT = 5.0
 
@@ -265,10 +276,18 @@ object Store {
         var minX = Int.MAX_VALUE; var maxX = Int.MIN_VALUE; var minY = Int.MAX_VALUE; var maxY = Int.MIN_VALUE
     }
 
-    class Pt(val x: Int, val y: Int, val tag: String)
+    class Pt(val x: Int, val y: Int, val tag: String, val name: String = "")
 
     @Synchronized
-    fun alliancePoints(): List<Pt> = mapPlayers.values.map { Pt(it.v.x, it.v.y, it.v.guild) }
+    fun alliancePoints(): List<Pt> = mapPlayers.values.map { Pt(it.v.x, it.v.y, it.v.guild, it.v.name) }
+
+    @Synchronized
+    fun fortPoints(): List<Pt> =
+        if (fortType < 0) emptyList() else mapObjs.values.filter { it.v.type == fortType }.map { Pt(it.v.x, it.v.y, it.v.guild) }
+
+    @Synchronized
+    fun objCount(): Int = mapObjs.size
+
     private class Chg(val name: String, val dm: Long, val dk: Long, val prev: Long, val total: Long)
 
     private fun fmtNum(v: Long): String {
@@ -354,11 +373,38 @@ object Store {
                     val lv = String.format(Locale.US, "%.1f", a.lvl.toDouble() / maxOf(a.n, 1))
                     sb.append("\n[$tag]").append(full[tag]?.let { " $it" } ?: "").append('\n')
                     sb.append("  أعضاء ظاهرون ${a.n} | المركز ($cx,$cy) | x ${a.minX}–${a.maxX} y ${a.minY}–${a.maxY}\n")
+                    if (fortType >= 0) {
+                        val fs = mapObjs.values.map { it.v }.filter { it.type == fortType && it.guild == tag }
+                        if (fs.isNotEmpty()) sb.append("  حصون ${fs.size}: " + fs.take(8).joinToString(" ") { "(${it.x},${it.y})" } + "\n")
+                    }
                     if (a.withMight == 0) {
                         sb.append("  القوة: غير معروفة (اضغط على قلاعهم) | م$lv\n")
                     } else {
                         val avg = a.total / a.withMight
                         sb.append("  القوة ${fmtNum(a.total)} (${a.withMight}/${a.n} معروفة) | متوسط ${fmtNum(avg)} | قتلى ${fmtNum(a.kills)} | م$lv\n")
+                    }
+                }
+            }
+            MODE_FORTS -> {
+                if (fortType < 0) {
+                    val byType = mapObjs.values.groupBy { it.v.type }
+                    sb.append("أنواع الكائنات الملتقطة (غير القلاع): ").append(mapObjs.size).append('\n')
+                    sb.append("اكتب رقم نوع الحصن في خانة «نوع الحصن» تحت الخريطة. ابحث عن النوع الذي تتجمع إحداثياته على أماكن الحصون.\n")
+                    for ((tp, l) in byType.entries.sortedByDescending { it.value.size }.take(30)) {
+                        val ex = l.take(3).joinToString("  ") { "(${it.v.x},${it.v.y})" + (if (it.v.guild.isNotEmpty()) "[${it.v.guild}]" else "") }
+                        sb.append("\nنوع $tp ×${l.size}: $ex")
+                    }
+                    sb.append('\n')
+                } else {
+                    val rows = mapObjs.values.map { it.v }.filter { it.type == fortType }
+                        .filter { ok(it.guild) || ok(it.name) }
+                        .sortedWith(compareBy({ it.guild.isEmpty() }, { it.guild }, { it.x }, { it.y }))
+                    sb.append("الحصون (نوع $fortType): ").append(rows.size).append('\n')
+                    for (o in rows.take(limit * 3)) {
+                        sb.append("(${o.x},${o.y})")
+                        if (o.guild.isNotEmpty()) sb.append(" [${o.guild}]")
+                        if (o.name.isNotEmpty()) sb.append(" ${o.name}")
+                        sb.append('\n')
                     }
                 }
             }
@@ -482,6 +528,10 @@ object Store {
             is MightEntry -> { might.put(p.name, Stamped(now, p)); recordMight(p, now) }
             is GiftReceived -> received.add(Stamped(now, p))
             is MapPlayer -> { mapPlayers.put(key(p.x, p.y), Stamped(now, p)); ScanPlanner.onMapPlayer(p.x, p.y) }
+            is MapObject -> {
+                // a player castle at the same spot always wins over a generic object
+                if (!mapPlayers.containsKey(key(p.x, p.y))) mapObjs.put(key(p.x, p.y), Stamped(now, p))
+            }
             is CastlePopup -> { popups.put(key(p.x, p.y), Stamped(now, p)); ScanPlanner.onPopup(p.x, p.y) }
         }
         dirtyData = true
@@ -501,7 +551,7 @@ object Store {
 
     @Synchronized
     fun clear() {
-        gifts.clear(); might.clear(); received.clear(); mapPlayers.clear(); popups.clear(); frames = 0; dumps.clear(); mightHist.clear(); ops.clear(); ScanPlanner.reset(); sentHash.clear(); pendingHash.clear(); version++; saveLocked()
+        gifts.clear(); might.clear(); received.clear(); mapPlayers.clear(); popups.clear(); mapObjs.clear(); frames = 0; dumps.clear(); mightHist.clear(); ops.clear(); ScanPlanner.reset(); sentHash.clear(); pendingHash.clear(); version++; saveLocked()
     }
 
     @Synchronized

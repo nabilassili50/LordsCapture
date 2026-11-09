@@ -78,6 +78,15 @@ data class MapPlayer(
     val title: Int
 ) : ParsedPacket
 
+/** Any non-player map object (fortress, nest, resource...): type id + coordinates. The type id of fortresses is chosen in the UI. */
+data class MapObject(
+    val x: Int,
+    val y: Int,
+    val type: Int,
+    val name: String,
+    val guild: String
+) : ParsedPacket
+
 /**
  * Game stream = [u16 size (includes these 2 bytes)] [payload] ...
  * feed() raw TCP bytes; onFrame gets each payload without the size prefix.
@@ -234,7 +243,18 @@ object PacketParser {
     private fun scanPlayers(p: ByteArray, bb: ByteBuffer, out: MutableList<ParsedPacket>) {
         var i = 0
         while (i + MAP_OBJ_MIN <= p.size) {
-            if ((p[i + 4].toInt() and 0xFF) == OBJ_PLAYER) {
+            val objType = p[i + 4].toInt() and 0xFF
+            if (objType != OBJ_PLAYER && objType in 1..60 && isString(p, i + 5, 13) && isString(p, i + 18, 3)) {
+                val g = bb.getInt(i)
+                val oxy = GuidCodec.decode(g)
+                // strict check: the 3 GUID bytes must re-encode exactly from x,y (filters random byte matches)
+                if (oxy != null && oxy.first > 0 && oxy.second > 0 &&
+                    GuidCodec.encode(oxy.first, oxy.second) == (g and 0xFF.inv())
+                ) {
+                    out.add(MapObject(oxy.first, oxy.second, objType, cstr(p, i + 5, 13), cstr(p, i + 18, 3)))
+                }
+            }
+            if (objType == OBJ_PLAYER) {
                 val realm = bb.getShort(i + 21).toInt() and 0xFFFF
                 val level = p[i + 23].toInt() and 0xFF
                 if (realm <= MAX_REALM && level in 1..MAX_CASTLE_LEVEL &&
