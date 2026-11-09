@@ -19,6 +19,35 @@ object Store {
     @Volatile var status: String = "متوقف"
     @Volatile var frames: Long = 0
     @Volatile var dumpOn: Boolean = false
+    @Volatile var version: Long = 0          // bumped on every change, so the UI can skip redraws
+    @Volatile var lastUpload: String = ""
+    private var dirtyData = false
+    private val sentHash = HashMap<String, Int>()
+    private val pendingHash = HashMap<String, Int>()
+
+    data class Stats(
+        val frames: Long, val might: Int, val castles: Int, val popups: Int, val gifts: Int,
+        val received: Int, val changed: Int, val covered: Int, val blocks: Int, val due: Int
+    )
+    class Snapshot(val json: String, val items: Int)
+
+    fun onFrame() { frames++; version++ }
+
+    @Synchronized
+    fun setUpload(msg: String) { lastUpload = fmt.format(Date()) + "  " + msg; version++ }
+
+    @Synchronized
+    fun commitSent() { sentHash.putAll(pendingHash); pendingHash.clear() }
+
+    @Synchronized
+    fun stats(): Stats = Stats(
+        frames, might.size, mapPlayers.size, popups.size, gifts.size, received.size,
+        mightHist.count { it.value.size > 1 },
+        ScanPlanner.coveredBlocks(), ScanPlanner.totalBlocks(), ScanPlanner.dueCount()
+    )
+
+    @Synchronized
+    fun extras(): String = (ScanPlanner.nextText() + opsBrief()).trim()
     private val dumps = ArrayDeque<String>()
 
     @Synchronized
@@ -130,10 +159,10 @@ object Store {
     }
 
     @Synchronized
-    fun save() = saveLocked()
+    fun save() { if (dirtyData) saveLocked() }
 
     private fun maybeSave() {
-        if (System.currentTimeMillis() - lastSave > 60_000) saveLocked()
+        if (dirtyData && System.currentTimeMillis() - lastSave > 60_000) saveLocked()
     }
 
     private fun saveLocked() {
@@ -164,6 +193,7 @@ object Store {
             val f = File(d, "store.dat")
             if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
             lastSave = System.currentTimeMillis()
+            dirtyData = false
         } catch (_: Exception) {
         }
     }
@@ -345,13 +375,23 @@ object Store {
     private fun nn(v: Any?) = v?.toString() ?: "null"
 
     @Synchronized
-    fun json(token: String): String {
+    fun json(token: String, delta: Boolean = false): Snapshot {
+        pendingHash.clear()
+        var items = 0
+        // true when this item must be sent (always for a full upload; only if changed for a delta upload)
+        fun want(key: String, h: Int): Boolean {
+            if (delta && sentHash[key] == h) return false
+            pendingHash[key] = h
+            items++
+            return true
+        }
         val sb = StringBuilder()
         sb.append("{\"token\":").append(js(token)).append(",\"sent_at\":").append(System.currentTimeMillis() / 1000)
         sb.append(",\"might\":[")
         var first = true
         for (s in might.values) {
             val m = s.v
+            if (!want("m:" + m.name, "${m.rank}|${m.might}|${m.kills}|${m.lastSeen}".hashCode())) continue
             if (!first) sb.append(','); first = false
             sb.append("{\"name\":").append(js(m.name))
                 .append(",\"rank\":${m.rank},\"might\":${m.might},\"kills\":${m.kills},\"last_seen\":${m.lastSeen},\"at\":${s.at}}")
@@ -361,6 +401,8 @@ object Store {
         for ((k, st) in mapPlayers) {
             val c = st.v
             val pop = popups[k]?.v
+            val h = "${c.name}|${c.guild}|${c.level}|${pop?.vip}|${pop?.guildRank}|${pop?.might}|${pop?.kills}|${pop?.guildFullName}".hashCode()
+            if (!want("c:$k", h)) continue
             if (!first) sb.append(','); first = false
             sb.append("{\"x\":${c.x},\"y\":${c.y},\"name\":").append(js(c.name))
                 .append(",\"guild\":").append(js(c.guild))
@@ -372,6 +414,7 @@ object Store {
         for ((k, st) in popups) {
             if (mapPlayers.containsKey(k)) continue
             val p = st.v
+            if (!want("c:$k", "p|${p.vip}|${p.guildRank}|${p.might}|${p.kills}|${p.guildFullName}".hashCode())) continue
             if (!first) sb.append(','); first = false
             sb.append("{\"x\":${p.x},\"y\":${p.y},\"name\":\"\",\"guild\":\"\",\"level\":null,\"realm\":null,\"flags\":null,\"title\":null")
                 .append(",\"vip\":${p.vip},\"guild_rank\":${p.guildRank},\"guild_full_name\":").append(js(p.guildFullName))
@@ -381,13 +424,14 @@ object Store {
         first = true
         for (s in gifts.values) {
             val g = s.v
+            if (!want("g:${g.sortIndex}", "${g.name}|${g.giftType}|${g.giftGroup}|${g.count}|${g.quality}|${g.monsterType}".hashCode())) continue
             if (!first) sb.append(','); first = false
             sb.append("{\"sort_index\":${g.sortIndex},\"name\":").append(js(g.name))
                 .append(",\"gift_type\":${g.giftType},\"gift_group\":${g.giftGroup},\"count\":${g.count},\"quality\":${g.quality}")
                 .append(",\"monster_type\":${g.monsterType},\"seconds_ago\":${g.secondsAgo},\"at\":${s.at}}")
         }
         sb.append("]}")
-        return sb.toString()
+        return Snapshot(sb.toString(), items)
     }
 
     private fun key(x: Int, y: Int) = x * 2048 + y
@@ -402,12 +446,15 @@ object Store {
             is MapPlayer -> { mapPlayers.put(key(p.x, p.y), Stamped(now, p)); ScanPlanner.onMapPlayer(p.x, p.y) }
             is CastlePopup -> { popups.put(key(p.x, p.y), Stamped(now, p)); ScanPlanner.onPopup(p.x, p.y) }
         }
+        dirtyData = true
+        version++
         maybeSave()
     }
 
     @Synchronized
     fun log(s: String) {
         logs.addLast(fmt.format(Date()) + "  " + s)
+        version++
         while (logs.size > 300) logs.removeFirst()
     }
 
@@ -416,7 +463,7 @@ object Store {
 
     @Synchronized
     fun clear() {
-        gifts.clear(); might.clear(); received.clear(); mapPlayers.clear(); popups.clear(); frames = 0; dumps.clear(); mightHist.clear(); ops.clear(); ScanPlanner.reset(); saveLocked()
+        gifts.clear(); might.clear(); received.clear(); mapPlayers.clear(); popups.clear(); frames = 0; dumps.clear(); mightHist.clear(); ops.clear(); ScanPlanner.reset(); sentHash.clear(); pendingHash.clear(); version++; saveLocked()
     }
 
     @Synchronized

@@ -80,6 +80,24 @@ object ScanPlanner {
         return sb.toString()
     }
 
+
+    @Synchronized
+    fun coveredBlocks(now: Long = System.currentTimeMillis()): Int = blockSeen.count { it != 0L && now - it < BLOCK_TIMEOUT_MS }
+
+    fun totalBlocks(): Int = BX * BY
+
+    @Synchronized
+    fun dueCount(now: Long = System.currentTimeMillis()): Int =
+        castleSeen.keys.count { now - (castleTapped[it] ?: 0L) >= CASTLE_TIMEOUT_MS }
+
+    /** "التالي: x,y (note) | ..." or empty when nothing is due. */
+    @Synchronized
+    fun nextText(now: Long = System.currentTimeMillis()): String {
+        val next = dueCastles(3, now)
+        if (next.isEmpty()) return ""
+        return "التالي: " + next.joinToString(" | ") { "${it.x},${it.y} (${it.note})" }
+    }
+
     @Synchronized
     fun reset() {
         blockSeen.fill(0L)

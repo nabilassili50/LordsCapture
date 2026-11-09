@@ -3,6 +3,7 @@ package com.botvi.lords
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -13,12 +14,14 @@ class CaptureService : Service() {
     @Volatile private var runFlag = false
     @Volatile private var conn: PcapConnection? = null
     private var worker: Thread? = null
+    private var monitor: Thread? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         Store.init(applicationContext)
+        ensureChannels()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -28,7 +31,7 @@ class CaptureService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        val n = buildNotification()
+        val n = buildNotification("الالتقاط يعمل")
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
@@ -38,6 +41,7 @@ class CaptureService : Service() {
         val serverPort = intent?.getIntExtra("serverPort", 0) ?: 0
         val pdPort = intent?.getIntExtra("pdPort", 8080) ?: 8080
         startCapture(prefix, serverPort, pdPort)
+        startMonitor()
         return START_NOT_STICKY
     }
 
@@ -45,11 +49,14 @@ class CaptureService : Service() {
         if (worker != null) return
         runFlag = true
         worker = Thread {
+            var fails = 0
             while (runFlag) {
                 try {
                     Store.status = "اتصال بـ PCAPdroid (127.0.0.1:$pdPort)..."
                     val c = PcapSource.open("127.0.0.1", pdPort)
                     conn = c
+                    if (fails > 0) cancelAlert()
+                    fails = 0
                     Store.status = "متصل بـ PCAPdroid — بانتظار حزم اللعبة"
                     Store.log("connected to PCAPdroid")
                     val tracker = FlowTracker(
@@ -63,8 +70,11 @@ class CaptureService : Service() {
                         .pump { runFlag }
                 } catch (e: Exception) {
                     if (runFlag) {
-                        Store.log("error: ${e.message}")
-                        Store.status = "انقطع الاتصال — إعادة المحاولة بعد 3 ثوان"
+                        fails++
+                        // log the first failure and then every 10th, so the log does not drown in retries
+                        if (fails == 1 || fails % 10 == 0) Store.log("PCAPdroid غير متصل (محاولة $fails): ${e.message}")
+                        Store.status = "PCAPdroid متوقف — شغّل الالتقاط فيه (محاولة $fails)"
+                        if (fails == 5) postAlert()
                     }
                 } finally {
                     conn?.close()
@@ -81,8 +91,40 @@ class CaptureService : Service() {
         }
     }
 
+    /** Every few seconds: refresh the notification text and run the optional auto-upload. */
+    private fun startMonitor() {
+        if (monitor != null) return
+        monitor = Thread {
+            var lastUp = 0L
+            var tick = 0
+            while (runFlag) {
+                try { Thread.sleep(5000) } catch (_: InterruptedException) { break }
+                if (!runFlag) break
+                tick++
+                if (tick % 2 == 0) {
+                    val st = Store.stats()
+                    updateNotification("حزم ${st.frames} • لاعبون ${st.might} • قلاع ${st.castles}")
+                }
+                val p = getSharedPreferences("lc", MODE_PRIVATE)
+                val mins = p.getInt("up_min", 0)
+                val url = p.getString("up_url", "") ?: ""
+                if (mins <= 0 || url.isEmpty()) continue
+                val now = System.currentTimeMillis()
+                if (now - lastUp < mins * 60_000L) continue
+                lastUp = now
+                Uploader.post(url, p.getString("up_tok", "") ?: "", true) { msg ->
+                    Store.setUpload(msg)
+                    if (!msg.startsWith("لا تغييرات")) Store.log(msg)
+                }
+            }
+        }.also {
+            it.isDaemon = true
+            it.start()
+        }
+    }
+
     private fun handle(payload: ByteArray) {
-        Store.frames++
+        Store.onFrame()
         val items = PacketParser.parse(payload)
         for (p in items) Store.add(p)
         Store.recordOp(payload, items.size)
@@ -100,8 +142,11 @@ class CaptureService : Service() {
         conn?.close()
         worker?.interrupt()
         worker = null
+        monitor?.interrupt()
+        monitor = null
         Store.status = "متوقف"
         Store.save()
+        cancelAlert()
     }
 
     override fun onDestroy() {
@@ -109,21 +154,58 @@ class CaptureService : Service() {
         super.onDestroy()
     }
 
-    private fun buildNotification(): Notification {
-        val nm = getSystemService(NotificationManager::class.java)
+    private fun ensureChannels() {
         if (Build.VERSION.SDK_INT >= 26) {
+            val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(NotificationChannel(CH, "Lords Capture", NotificationManager.IMPORTANCE_LOW))
+            nm.createNotificationChannel(NotificationChannel(ALERT_CH, "تنبيهات الالتقاط", NotificationManager.IMPORTANCE_DEFAULT))
         }
+    }
+
+    private fun buildNotification(text: String): Notification {
         val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CH) else Notification.Builder(this)
-        return b.setContentTitle("Lords Capture v1")
-            .setContentText("الالتقاط يعمل")
+        return b.setContentTitle("Lords Capture")
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setOngoing(true)
             .build()
     }
 
+    private fun updateNotification(text: String) {
+        try {
+            getSystemService(NotificationManager::class.java).notify(1, buildNotification(text))
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun postAlert() {
+        try {
+            val open = PendingIntent.getActivity(
+                this, 0, Intent(this, MainActivity::class.java),
+                if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0
+            )
+            val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, ALERT_CH) else Notification.Builder(this)
+            val n = b.setContentTitle("PCAPdroid متوقف")
+                .setContentText("شغّل الالتقاط في PCAPdroid (HTTP Server، المنفذ 8080) — سيتصل التطبيق تلقائياً")
+                .setSmallIcon(android.R.drawable.stat_notify_error)
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build()
+            getSystemService(NotificationManager::class.java).notify(2, n)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun cancelAlert() {
+        try {
+            getSystemService(NotificationManager::class.java).cancel(2)
+        } catch (_: Exception) {
+        }
+    }
+
     companion object {
         const val ACTION_STOP = "com.botvi.lords.STOP"
         private const val CH = "lordscapture"
+        private const val ALERT_CH = "lordsalert"
     }
 }
