@@ -27,7 +27,8 @@ object Store {
 
     data class Stats(
         val frames: Long, val might: Int, val castles: Int, val popups: Int, val gifts: Int,
-        val received: Int, val changed: Int, val covered: Int, val blocks: Int, val due: Int
+        val received: Int, val changed: Int, val covered: Int, val blocks: Int, val due: Int,
+        val mapFrames: Long, val popupFrames: Long
     )
     class Snapshot(val json: String, val items: Int)
 
@@ -43,11 +44,24 @@ object Store {
     fun stats(): Stats = Stats(
         frames, might.size, mapPlayers.size, popups.size, gifts.size, received.size,
         mightHist.count { it.value.size > 1 },
-        ScanPlanner.coveredBlocks(), ScanPlanner.totalBlocks(), ScanPlanner.dueCount()
+        ScanPlanner.coveredBlocks(), ScanPlanner.totalBlocks(), ScanPlanner.dueCount(),
+        opCount { it in MAP_OPS_HEX }, opCount { it == "AC 08 0C" }
     )
 
+    private val MAP_OPS_HEX = setOf("02", "03", "0F", "0D", "0E", "09", "18", "17", "16").map { "AC 08 $it" }.toSet()
+
+    private fun opCount(match: (String) -> Boolean): Long = ops.entries.filter { match(it.key) }.sumOf { it.value.count }
+
     @Synchronized
-    fun extras(): String = (ScanPlanner.nextText() + opsBrief()).trim()
+    fun extras(): String {
+        val mapF = opCount { it in MAP_OPS_HEX }
+        val hint = when {
+            frames > 20 && mapF == 0L -> "لم تصل حزم خريطة بعد — افتح الخريطة في اللعبة وحرّكها\n"
+            mapF > 0 && mapPlayers.isEmpty() -> "وصلت حزم خريطة لكن لم تُفك — فعّل تفريغ الحزم وصدّره وابعثه\n"
+            else -> ""
+        }
+        return (hint + ScanPlanner.nextText() + opsBrief()).trim()
+    }
     private val dumps = ArrayDeque<String>()
 
     @Synchronized
@@ -305,9 +319,12 @@ object Store {
             MODE_ALLIANCE -> {
                 val byName = mightMap()
                 val g = HashMap<String, Agg>()
+                val full = HashMap<String, String>()
                 for ((k, st) in mapPlayers) {
                     val c = st.v
                     val tag = if (c.guild.isBlank()) "(بدون تحالف)" else c.guild
+                    val fnm = popups[k]?.v?.guildFullName
+                    if (!fnm.isNullOrBlank()) full[tag] = fnm
                     val a = g.getOrPut(tag) { Agg() }
                     a.n++
                     a.lvl += c.level
@@ -316,12 +333,12 @@ object Store {
                     val kl = pop?.kills ?: byName[c.name.take(12)]?.kills
                     if (mg != null) { a.withMight++; a.total += mg; a.kills += (kl ?: 0L) }
                 }
-                val rows = g.entries.filter { ok(it.key) }.sortedByDescending { it.value.total }
+                val rows = g.entries.filter { ok(it.key) || ok(full[it.key] ?: "") }.sortedByDescending { it.value.total }
                 sb.append("التحالفات: ").append(rows.size).append('\n')
                 for ((tag, a) in rows.take(limit)) {
                     val avg = if (a.withMight > 0) a.total / a.withMight else 0L
                     val lv = String.format(Locale.US, "%.1f", a.lvl.toDouble() / maxOf(a.n, 1))
-                    sb.append("[$tag] قلاع ${a.n} (بقوة معروفة ${a.withMight}) | المجموع ${fmtNum(a.total)} | المتوسط ${fmtNum(avg)} | قتلى ${fmtNum(a.kills)} | م$lv\n")
+                    sb.append("[$tag]${full[tag]?.let { " $it" } ?: ""} قلاع ${a.n} (بقوة معروفة ${a.withMight}) | المجموع ${fmtNum(a.total)} | المتوسط ${fmtNum(avg)} | قتلى ${fmtNum(a.kills)} | م$lv\n")
                 }
             }
             MODE_INACTIVE -> {

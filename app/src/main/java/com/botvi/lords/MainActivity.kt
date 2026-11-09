@@ -446,7 +446,8 @@ class MainActivity : Activity() {
         val vals = listOf(st.frames.toString(), st.might.toString(), st.castles.toString(),
             st.popups.toString(), st.gifts.toString(), st.changed.toString())
         for (i in vals.indices) tileVals[i].text = vals[i]
-        coverTv.text = "تغطية الخريطة: ${st.covered}/${st.blocks} • قلاع تحتاج فحص: ${st.due}"
+        coverTv.text = "حزم الخريطة: ${st.mapFrames} • نوافذ القلاع: ${st.popupFrames}\n" +
+            "تغطية الخريطة: ${st.covered}/${st.blocks} • قلاع تحتاج فحص: ${st.due}"
 
         val ex = Store.extras()
         extrasTv.text = ex
