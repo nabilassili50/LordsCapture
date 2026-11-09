@@ -27,8 +27,8 @@ object Store {
             is GiftEntry -> gifts.put(p.sortIndex, Stamped(now, p))
             is MightEntry -> might.put(p.name, Stamped(now, p))
             is GiftReceived -> received.add(Stamped(now, p))
-            is MapPlayer -> mapPlayers.put(key(p.x, p.y), Stamped(now, p))
-            is CastlePopup -> popups.put(key(p.x, p.y), Stamped(now, p))
+            is MapPlayer -> { mapPlayers.put(key(p.x, p.y), Stamped(now, p)); ScanPlanner.onMapPlayer(p.x, p.y) }
+            is CastlePopup -> { popups.put(key(p.x, p.y), Stamped(now, p)); ScanPlanner.onPopup(p.x, p.y) }
         }
     }
 
@@ -43,7 +43,7 @@ object Store {
 
     @Synchronized
     fun clear() {
-        gifts.clear(); might.clear(); received.clear(); mapPlayers.clear(); popups.clear(); frames = 0
+        gifts.clear(); might.clear(); received.clear(); mapPlayers.clear(); popups.clear(); frames = 0; ScanPlanner.reset()
     }
 
     @Synchronized
@@ -53,7 +53,8 @@ object Store {
             "قائمة القوة: ${might.size}\n" +
             "هدايا صيد مستلمة: ${received.size}\n" +
             "قلاع على الخريطة: ${mapPlayers.size}\n" +
-            "نوافذ قلاع (إحداثيات/رتبة): ${popups.size}"
+            "نوافذ قلاع (إحداثيات/رتبة): ${popups.size}\n" +
+            ScanPlanner.report()
 
     private fun q(s: String) = "\"" + s.replace("\"", "\"\"") + "\""
 
