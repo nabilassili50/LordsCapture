@@ -53,35 +53,70 @@ class PcapConnection(val socket: Socket, val stream: InputStream) : Closeable {
     }
 }
 
-/** Connects to the PCAPdroid "HTTP Server" dump mode and returns the live PCAP byte stream. */
+/** Connects to the PCAPdroid "HTTP Server" dump mode and returns the live PCAP byte stream.
+ *  PCAPdroid answers "GET /" with a 302 redirect to the real pcap path, so redirects are followed. */
 object PcapSource {
-    fun open(host: String, port: Int): PcapConnection {
-        val s = Socket()
-        s.connect(InetSocketAddress(host, port), 5000)
-        s.tcpNoDelay = true
-        val out = s.getOutputStream()
-        out.write("GET / HTTP/1.1\r\nHost: $host:$port\r\nAccept: */*\r\nConnection: close\r\n\r\n".toByteArray())
-        out.flush()
+    private const val MAX_REDIRECTS = 5
 
-        val ins = BufferedInputStream(s.getInputStream(), 65536)
-        val head = StringBuilder()
-        while (!head.endsWith("\r\n\r\n")) {
-            val c = ins.read()
-            if (c < 0) throw EOFException("no HTTP response")
-            head.append(c.toChar())
-            if (head.length > 16384) throw IOException("bad HTTP header")
+    /** Turns a Location header (absolute URL or relative path) into a request path. */
+    private fun toPath(location: String): String {
+        val loc = location.trim()
+        if (loc.startsWith("http://", true) || loc.startsWith("https://", true)) {
+            val rest = loc.substringAfter("://")
+            val i = rest.indexOf('/')
+            return if (i < 0) "/" else rest.substring(i)
         }
-        val text = head.toString()
-        val lower = text.lowercase()
-        val statusLine = text.lineSequence().first()
-        if (!lower.startsWith("http/1.") || !statusLine.contains(" 200")) {
-            s.close()
-            throw IOException("HTTP: $statusLine")
+        return if (loc.startsWith("/")) loc else "/$loc"
+    }
+
+    fun open(host: String, port: Int): PcapConnection {
+        var path = "/"
+        var redirects = 0
+        while (true) {
+            val s = Socket()
+            try {
+                s.connect(InetSocketAddress(host, port), 5000)
+                s.tcpNoDelay = true
+                val out = s.getOutputStream()
+                out.write("GET $path HTTP/1.1\r\nHost: $host:$port\r\nAccept: */*\r\nConnection: close\r\n\r\n".toByteArray())
+                out.flush()
+
+                val ins = BufferedInputStream(s.getInputStream(), 65536)
+                val head = StringBuilder()
+                while (!head.endsWith("\r\n\r\n")) {
+                    val c = ins.read()
+                    if (c < 0) throw EOFException("no HTTP response")
+                    head.append(c.toChar())
+                    if (head.length > 16384) throw IOException("bad HTTP header")
+                }
+                val text = head.toString()
+                val lower = text.lowercase()
+                val statusLine = text.lineSequence().first()
+                val code = statusLine.split(' ').getOrNull(1)?.toIntOrNull() ?: 0
+
+                if (code in listOf(301, 302, 303, 307, 308)) {
+                    val loc = text.lineSequence()
+                        .firstOrNull { it.startsWith("location:", ignoreCase = true) }
+                        ?.substringAfter(':')?.trim()
+                    s.close()
+                    if (loc.isNullOrEmpty() || ++redirects > MAX_REDIRECTS)
+                        throw IOException("HTTP: $statusLine (redirect)")
+                    path = toPath(loc)
+                    continue
+                }
+                if (!lower.startsWith("http/1.") || code != 200) {
+                    s.close()
+                    throw IOException("HTTP: $statusLine")
+                }
+                val stream: InputStream =
+                    if (lower.contains("transfer-encoding: chunked")) BufferedInputStream(ChunkedInputStream(ins), 65536)
+                    else ins
+                return PcapConnection(s, stream)
+            } catch (e: Exception) {
+                try { s.close() } catch (_: Exception) {}
+                throw e
+            }
         }
-        val stream: InputStream =
-            if (lower.contains("transfer-encoding: chunked")) BufferedInputStream(ChunkedInputStream(ins), 65536)
-            else ins
-        return PcapConnection(s, stream)
     }
 }
 
