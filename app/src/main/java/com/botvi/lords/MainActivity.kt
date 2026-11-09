@@ -538,22 +538,36 @@ class MainActivity : Activity() {
         } else {
             copyBox.visibility = View.GONE
         }
+        val pts = allianceMap.points
+        val mine = if (sel != null) pts.filter { it.tag == sel } else emptyList()
+        val ordered: List<Store.Pt>
         if (sel == null) {
-            mapInfoTv.text = "اضغط اسم تحالف (فوق الخريطة أو عليها) لعرض قلاعه، ثم اضغط اسم أي لاعب ليظهر مكانه على الخريطة"
+            mapInfoTv.text = "${pts.size} قلعة — اضغط اسم تحالف لعرض قلاعه أولاً، واضغط اسم أي لاعب ليظهر مكانه على الخريطة"
+            ordered = pts.sortedWith(compareBy({ it.tag.isEmpty() }, { it.tag }, { it.x }, { it.y }))
+        } else if (mine.isEmpty()) {
+            mapInfoTv.text = "[$sel] لا قلاع ظاهرة"
             return
+        } else {
+            val xs = mine.map { it.x }.sorted(); val ys = mine.map { it.y }.sorted()
+            val cx = xs[xs.size / 2]; val cy = ys[ys.size / 2]
+            val sb = StringBuilder("${mine.size} قلعة — [$sel]\n")
+            sb.append("المركز ($cx,$cy) | x ${xs.first()}–${xs.last()} | y ${ys.first()}–${ys.last()}")
+            val fs = allianceMap.forts.filter { it.tag == sel }
+            if (fs.isNotEmpty()) sb.append("\nحصون ${fs.size}: " + fs.take(12).joinToString(" ") { "(${it.x},${it.y})" })
+            mapInfoTv.text = sb.toString()
+            // the alliance's own castles first, then the nearest other castles up to 100 in total
+            ordered = mine.sortedWith(compareBy({ it.x }, { it.y })) +
+                pts.filter { it.tag != sel }.sortedBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }
         }
-        val mine = allianceMap.points.filter { it.tag == sel }
-        if (mine.isEmpty()) { mapInfoTv.text = "[$sel] لا قلاع ظاهرة"; return }
-        val xs = mine.map { it.x }.sorted(); val ys = mine.map { it.y }.sorted()
-        val sb = StringBuilder("${mine.size} قلعة — [$sel]\n")
-        sb.append("المركز (${xs[xs.size / 2]},${ys[ys.size / 2]}) | x ${xs.first()}–${xs.last()} | y ${ys.first()}–${ys.last()}")
-        val fs = allianceMap.forts.filter { it.tag == sel }
-        if (fs.isNotEmpty()) sb.append("\nحصون ${fs.size}: " + fs.take(12).joinToString(" ") { "(${it.x},${it.y})" })
-        mapInfoTv.text = sb.toString()
+        val shown = ordered.take(LIST_MAX)
         val hl = allianceMap.highlight
-        for (p in mine.sortedWith(compareBy({ it.x }, { it.y })).take(100)) {
+        for ((idx, p) in shown.withIndex()) {
+            if (sel != null && idx == mine.size) {
+                listBox.addView(tv("قلاع أخرى — الأقرب لمركز التحالف", 12f, cMuted).apply { setPadding(dp(4), dp(8), dp(4), dp(6)) })
+            }
             val on = hl != null && hl.x == p.x && hl.y == p.y
-            listBox.addView(tv("${p.name}  (${p.x},${p.y})", 13f, if (on) Color.parseColor("#FFE14D") else cText).apply {
+            val tagTxt = if (p.tag.isNotEmpty() && p.tag != sel) "  [${p.tag}]" else ""
+            listBox.addView(tv("${p.name}  (${p.x},${p.y})$tagTxt", 13f, if (on) Color.parseColor("#FFE14D") else cText).apply {
                 background = rounded(if (on) cStroke else cTile, 8)
                 setPadding(dp(10), dp(9), dp(10), dp(9))
                 layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 4)
@@ -565,7 +579,7 @@ class MainActivity : Activity() {
                 }
             })
         }
-        if (mine.size > 100) listBox.addView(tv("… +${mine.size - 100}", 12f, cMuted))
+        if (ordered.size > LIST_MAX) listBox.addView(tv("… +${ordered.size - LIST_MAX}", 12f, cMuted))
     }
 
     private fun refresh(forceNow: Boolean = false) {
@@ -648,6 +662,7 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        private const val LIST_MAX = 100
         private const val REQ_EXPORT = 42
         private const val REQ_DUMP = 43
         private const val REQ_HIST = 44
