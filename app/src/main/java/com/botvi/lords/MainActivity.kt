@@ -48,6 +48,7 @@ class MainActivity : Activity() {
     private lateinit var reportBox: LinearLayout
     private lateinit var copyBox2: LinearLayout
     private lateinit var copyTv2: TextView
+    private lateinit var watchBtn: Button
     private var lastReportText = ""
     private var lastReportKeys: Map<Int, String> = emptyMap()
     private var selReportKey: String? = null
@@ -378,7 +379,7 @@ class MainActivity : Activity() {
         val chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val defs = listOf(
             "👑 القوة" to Store.MODE_POWER, "🏰 قلاع" to Store.MODE_CASTLES, "🎁 هدايا" to Store.MODE_GIFTS,
-            "🛡 تحالفات" to Store.MODE_ALLIANCE, "🏯 حصون" to Store.MODE_FORTS, "💤 خاملون" to Store.MODE_INACTIVE, "📊 تغيّرات" to Store.MODE_CHANGES, "🚚 تنقّلات" to Store.MODE_MOVES
+            "🛡 تحالفات" to Store.MODE_ALLIANCE, "🏯 حصون" to Store.MODE_FORTS, "💤 خاملون" to Store.MODE_INACTIVE, "📊 تغيّرات" to Store.MODE_CHANGES, "🚚 تنقّلات" to Store.MODE_MOVES, "👁 مراقبة" to Store.MODE_WATCH
         )
         for ((t, m) in defs) {
             val b = chip(t) { viewMode = m; reportLimit = LIMIT_SMALL; lastReportText = ""; restyleModes(); refresh(true) }
@@ -390,6 +391,27 @@ class MainActivity : Activity() {
             isHorizontalScrollBarEnabled = false
             layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 8)
             addView(chipRow)
+        })
+        val watchEt = field("اسم لاعب للمراقبة (تنبيه عند ظهوره / انتقاله / تغيّر قوته)", "", false).apply {
+            layoutParams = lp(0, WRAP, 1f, 0, 2, 0, 6)
+        }
+        val watchAddBtn = pill("👁 أضف", cTile, cText) {
+            val n = watchEt.text.toString().trim()
+            if (n.isEmpty()) {
+                Toast.makeText(this, "اكتب اسم اللاعب", Toast.LENGTH_SHORT).show()
+            } else if (Store.watchAdd(n)) {
+                watchEt.setText("")
+                viewMode = Store.MODE_WATCH; reportLimit = LIMIT_SMALL; lastReportText = ""
+                restyleModes(); refresh(true)
+            } else {
+                Toast.makeText(this, "مضاف مسبقاً", Toast.LENGTH_SHORT).show()
+            }
+        }.apply { layoutParams = lp(WRAP, WRAP, 0f, 8, 0, 0, 6) }
+        rep.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(watchEt)
+            addView(watchAddBtn)
         })
         searchEt = field("بحث بالاسم / التحالف", "", false)
         searchEt.addTextChangedListener(object : TextWatcher {
@@ -410,6 +432,15 @@ class MainActivity : Activity() {
             cm.setPrimaryClip(android.content.ClipData.newPlainText("castle", copyTv2.text.toString()))
             Toast.makeText(this, "تم النسخ", Toast.LENGTH_SHORT).show()
         }.apply { layoutParams = lp(WRAP, WRAP, 0f, 8, 0, 0, 0) }
+        watchBtn = pill("👁 راقب", cTile, cText) {
+            val k = selReportKey
+            if (k != null) {
+                if (Store.isWatchedName(k)) Store.watchRemove(k) else Store.watchAdd(k)
+                watchBtn.text = if (Store.isWatchedName(k)) "👁 ألغِ" else "👁 راقب"
+                lastReportText = ""
+                refresh(true)
+            }
+        }.apply { layoutParams = lp(WRAP, WRAP, 0f, 6, 0, 0, 0) }
         copyBox2 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -419,6 +450,7 @@ class MainActivity : Activity() {
             visibility = View.GONE
             addView(copyTv2)
             addView(copyBtn2)
+            addView(watchBtn)
         }
         rep.addView(copyBox2)
         reportBox = LinearLayout(this).apply {
@@ -570,6 +602,7 @@ class MainActivity : Activity() {
                             Toast.makeText(this@MainActivity, "لا توجد إحداثيات لهذا اللاعب بعد", Toast.LENGTH_SHORT).show()
                         }
                         copyBox2.visibility = View.VISIBLE
+                        watchBtn.text = if (Store.isWatchedName(key)) "👁 ألغِ" else "👁 راقب"
                         selReportKey = key
                         renderReport(lastReportText, lastReportKeys)
                     }

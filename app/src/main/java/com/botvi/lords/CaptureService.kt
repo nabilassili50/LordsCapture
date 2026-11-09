@@ -101,6 +101,8 @@ class CaptureService : Service() {
                 try { Thread.sleep(5000) } catch (_: InterruptedException) { break }
                 if (!runFlag) break
                 tick++
+                val watchAl = Store.takeAlerts()
+                if (watchAl.isNotEmpty()) postWatch(watchAl)
                 if (tick % 2 == 0) {
                     val st = Store.stats()
                     updateNotification("حزم ${st.frames} • لاعبون ${st.might} • قلاع ${st.castles}")
@@ -192,6 +194,29 @@ class CaptureService : Service() {
                 .setAutoCancel(true)
                 .build()
             getSystemService(NotificationManager::class.java).notify(2, n)
+        } catch (_: Exception) {
+        }
+    }
+
+    private val recentWatch = ArrayDeque<String>()
+
+    private fun postWatch(alerts: List<String>) {
+        try {
+            for (a in alerts) recentWatch.addLast(a)
+            while (recentWatch.size > 6) recentWatch.removeFirst()
+            val open = PendingIntent.getActivity(
+                this, 0, Intent(this, MainActivity::class.java),
+                if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0
+            )
+            val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, ALERT_CH) else Notification.Builder(this)
+            val n = b.setContentTitle("👁 مراقبة اللاعبين")
+                .setContentText(alerts.last())
+                .setStyle(Notification.BigTextStyle().bigText(recentWatch.joinToString("\n")))
+                .setSmallIcon(android.R.drawable.stat_notify_more)
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build()
+            getSystemService(NotificationManager::class.java).notify(3, n)
         } catch (_: Exception) {
         }
     }

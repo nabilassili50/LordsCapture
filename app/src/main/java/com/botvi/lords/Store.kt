@@ -22,6 +22,13 @@ object Store {
     private val moves = ArrayList<Move>()
     private const val MAX_MOVES = 500
     private fun ident(name: String, realm: Int) = "$name|$realm"
+
+    // ---- watch list: names the user wants alerts for (kept in watch.txt, survives clear()) ----
+    private val watch = LinkedHashMap<String, String>()      // lowercase name -> display name
+    private val watchSeen = HashMap<String, Long>()          // lowercase name -> last time seen on the map (sec)
+    private val pendingAlerts = ArrayList<String>()
+    private const val WATCH_GONE_SEC = 1800L                 // seen again after this long = "appeared" alert
+    private const val MAX_ALERTS = 20
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     @Volatile var status: String = "متوقف"
@@ -98,6 +105,7 @@ object Store {
         if (dir != null) return
         dir = ctx.filesDir
         loadLocked()
+        loadWatch()
     }
 
     private fun recordMight(m: MightEntry, now: Long) {
@@ -106,7 +114,8 @@ object Store {
         if (last == null || last.might != m.might || last.kills != m.kills) {
             if (last != null && last.might > 0) {
                 val d = m.might - last.might
-                if (Math.abs(d) * 100.0 / last.might >= ALERT_PCT) log("⚠ " + m.name + ": القوة " + sgn(d))
+                if (isWatched(m.name)) watchAlert("👁 " + m.name + ": القوة " + sgn(d) + " | قتلى " + sgn(m.kills - last.kills))
+                else if (Math.abs(d) * 100.0 / last.might >= ALERT_PCT) log("⚠ " + m.name + ": القوة " + sgn(d))
             }
             list.add(MightPoint(now, m.might, m.kills))
             if (list.size > 200) list.removeAt(0)
@@ -282,6 +291,7 @@ object Store {
     const val MODE_CHANGES = 5
     const val MODE_FORTS = 6
     const val MODE_MOVES = 7
+    const val MODE_WATCH = 8
     const val FAST_MOVE_SEC = 9L   // seen at the old spot less than this long before the new one = moved "live"
     const val INACTIVE_DAYS = 3
     const val ALERT_PCT = 5.0
@@ -448,6 +458,31 @@ object Store {
                     sb.append("${m.name}${if (m.guild.isNotEmpty()) " [${m.guild}]" else ""} | (${m.fx},${m.fy}) ← (${m.tx},${m.ty}) | قبل $agoTxt$live\n")
                 }
             }
+            MODE_WATCH -> {
+                val names = watch.values.filter { ok(it) }
+                reportTotal = names.size
+                sb.append("المراقَبون: ").append(watch.size).append('\n')
+                if (watch.isEmpty()) {
+                    sb.append("أضف لاعباً: اكتب اسمه في خانة المراقبة، أو اضغط صفه في أي قائمة ثم «👁 راقب».\n")
+                }
+                names.take(limit).forEach { n ->
+                    mark(n)
+                    val c = mapPlayers.values.firstOrNull { it.v.name.equals(n, ignoreCase = true) }
+                    val m = might.values.firstOrNull { it.v.name.equals(n, ignoreCase = true) }?.v
+                    val sbl = StringBuilder(n)
+                    if (c != null) {
+                        if (c.v.guild.isNotEmpty()) sbl.append(" [").append(c.v.guild).append(']')
+                        sbl.append(" | K${c.v.realm} (${c.v.x},${c.v.y})")
+                    } else sbl.append(" | لم يظهر على الخريطة بعد")
+                    if (m != null) sbl.append(" | ").append(fmtNum(m.might)).append(" | قتلى ").append(fmtNum(m.kills))
+                    val seen = watchSeen[n.trim().lowercase()]
+                    if (seen != null) {
+                        val ago = now - seen
+                        sbl.append(" | ظهر قبل ").append(if (ago < 90) "${ago}ث" else if (ago < 5400) "${ago / 60}د" else if (ago < 129600) "${ago / 3600}س" else "${ago / 86400}ي")
+                    }
+                    sb.append(sbl).append('\n')
+                }
+            }
             MODE_INACTIVE -> {
                 val rows = might.values.map { it.v }.filter { ok(it.name) }
                 val online = rows.count { it.lastSeen == 0L }
@@ -592,6 +627,7 @@ object Store {
                 val k = key(p.x, p.y)
                 val id = ident(p.name, p.realm)
                 val oldK = nameIdx[id]
+                var relocatedFrom: MapPlayer? = null
                 if (oldK != null && oldK != k) {
                     val old = mapPlayers[oldK]
                     // same player (name + kingdom) now at another spot = relocation: drop the old castle, keep the history
@@ -599,6 +635,7 @@ object Store {
                         moves.add(Move(now, p.name, p.guild, p.realm, old.v.x, old.v.y, p.x, p.y, now - old.at))
                         if (moves.size > MAX_MOVES) moves.removeAt(0)
                         log("🚚 " + p.name + ": (" + old.v.x + "," + old.v.y + ") ← (" + p.x + "," + p.y + ")")
+                        relocatedFrom = old.v
                         mapPlayers.remove(oldK)
                         val pop = popups.remove(oldK)
                         if (pop != null && !popups.containsKey(k)) popups[k] = pop   // keep rank/might until re-tapped
@@ -608,6 +645,7 @@ object Store {
                 mapPlayers.put(k, Stamped(now, p))
                 nameIdx[id] = k
                 ScanPlanner.onMapPlayer(p.x, p.y)
+                onWatchedSeen(p, relocatedFrom, now)
             }
             is MapObject -> {
                 // a player castle at the same spot always wins over a generic object
@@ -618,6 +656,80 @@ object Store {
         dirtyData = true
         version++
         maybeSave()
+    }
+
+    // ---- watch list API ----
+    private fun wkey(name: String) = name.trim().lowercase()
+
+    private fun isWatched(name: String) = watch.containsKey(wkey(name))
+
+    @Synchronized
+    fun isWatchedName(name: String): Boolean = isWatched(name)
+
+    @Synchronized
+    fun watchCount(): Int = watch.size
+
+    @Synchronized
+    fun watchAdd(name: String): Boolean {
+        val n = name.trim().replace('\t', ' ').replace('\n', ' ')
+        if (n.isEmpty() || watch.containsKey(wkey(n))) return false
+        watch[wkey(n)] = n
+        saveWatch()
+        log("👁 بدأت مراقبة " + n)
+        version++
+        return true
+    }
+
+    @Synchronized
+    fun watchRemove(name: String) {
+        if (watch.remove(wkey(name)) != null) {
+            watchSeen.remove(wkey(name))
+            saveWatch()
+            log("👁 أُلغيت مراقبة " + name.trim())
+            version++
+        }
+    }
+
+    /** Alerts produced since the last call (the capture service shows them as a notification). */
+    @Synchronized
+    fun takeAlerts(): List<String> {
+        if (pendingAlerts.isEmpty()) return emptyList()
+        val r = ArrayList(pendingAlerts)
+        pendingAlerts.clear()
+        return r
+    }
+
+    private fun watchAlert(msg: String) {
+        log(msg)
+        pendingAlerts.add(msg)
+        while (pendingAlerts.size > MAX_ALERTS) pendingAlerts.removeAt(0)
+    }
+
+    private fun onWatchedSeen(p: MapPlayer, from: MapPlayer?, now: Long) {
+        val wk = wkey(p.name)
+        if (!watch.containsKey(wk)) return
+        val last = watchSeen[wk]
+        if (from != null) {
+            watchAlert("👁🚚 " + p.name + " انتقل: (" + from.x + "," + from.y + ") ← (" + p.x + "," + p.y + ") K" + p.realm)
+        } else if (last == null || now - last > WATCH_GONE_SEC) {
+            watchAlert("👁 " + p.name + " ظهر عند (" + p.x + "," + p.y + ") K" + p.realm +
+                (if (p.guild.isNotEmpty()) " [" + p.guild + "]" else ""))
+        }
+        watchSeen[wk] = now
+    }
+
+    private fun saveWatch() {
+        val d = dir ?: return
+        try { File(d, "watch.txt").writeText(watch.values.joinToString("\n")) } catch (_: Exception) {}
+    }
+
+    private fun loadWatch() {
+        val d = dir ?: return
+        try {
+            val f = File(d, "watch.txt")
+            if (!f.exists()) return
+            f.forEachLine { l -> val n = l.trim(); if (n.isNotEmpty()) watch[wkey(n)] = n }
+        } catch (_: Exception) {}
     }
 
     @Synchronized
