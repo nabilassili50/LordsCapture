@@ -20,6 +20,7 @@ object Store {
     @Volatile var status: String = "متوقف"
     @Volatile var frames: Long = 0
     @Volatile var dumpOn: Boolean = false
+    @Volatile var reportKeys: Map<Int, String> = emptyMap()   // report line index -> player name (tappable rows)
     @Volatile var fortType: Int = -1         // object type id the user marked as "fortress" (-1 = not chosen)
     @Volatile var version: Long = 0          // bumped on every change, so the UI can skip redraws
     @Volatile var lastUpload: String = ""
@@ -314,11 +315,14 @@ object Store {
         fun ok(name: String) = qy.isEmpty() || name.contains(qy, ignoreCase = true)
         val now = System.currentTimeMillis() / 1000
         val sb = StringBuilder()
+        val keyed = HashMap<Int, String>()
+        fun mark(n: String) { keyed[sb.count { it == '\n' }] = n }
         when (mode) {
             MODE_POWER -> {
                 val rows = might.values.map { it.v }.filter { ok(it.name) }.sortedByDescending { it.might }
                 sb.append("قائمة القوة: ").append(rows.size).append('\n')
                 rows.take(limit).forEachIndexed { i, m ->
+                    mark(m.name)
                     sb.append("${i + 1}. ${m.name} | ${fmtNum(m.might)} | قتلى ${fmtNum(m.kills)} | رتبة ${m.rank}\n")
                 }
             }
@@ -331,6 +335,7 @@ object Store {
                     val c = st.v
                     val pop = popups[k]?.v
                     val mg = pop?.might ?: byName[c.name.take(12)]?.might
+                    mark(c.name)
                     sb.append("${c.name} [${c.guild}] (${c.x},${c.y}) م${c.level}")
                     if (pop != null) sb.append(" VIP ${pop.vip} رتبة ${pop.guildRank}")
                     if (mg != null) sb.append(" | ${fmtNum(mg)}")
@@ -341,6 +346,7 @@ object Store {
                 val rows = gifts.values.map { it.v }.filter { ok(it.name) }.sortedBy { it.sortIndex }
                 sb.append("هدايا التحالف: ").append(rows.size).append(" | هدايا صيد مستلمة: ").append(received.size).append('\n')
                 rows.take(limit).forEach { g ->
+                    mark(g.name)
                     sb.append("${g.name} | نوع ${g.giftType}/${g.giftGroup} | ×${g.count} | جودة ${g.quality}\n")
                 }
             }
@@ -417,6 +423,7 @@ object Store {
                     .sortedByDescending { it.second }
                 sb.append("خاملون ≥ $INACTIVE_DAYS أيام: ${idle.size} | متصل/غير معروف: $online\n")
                 idle.take(limit).forEach { (m, d) ->
+                    mark(m.name)
                     val ds = String.format(Locale.US, "%.1f", d)
                     sb.append("${m.name} | $ds يوم | ${fmtNum(m.might)}\n")
                 }
@@ -431,12 +438,21 @@ object Store {
                 rows.sortByDescending { Math.abs(it.dm) }
                 sb.append("لاعبون تغيرت قوتهم: ").append(rows.size).append('\n')
                 rows.take(limit).forEach { r ->
+                    mark(r.name)
                     val pct = if (r.prev > 0) String.format(Locale.US, "%.1f", r.dm * 100.0 / r.prev) else "-"
                     sb.append("${r.name} | ${sgn(r.dm)} ($pct%) | قتلى ${sgn(r.dk)} | منذ البداية ${sgn(r.total)}\n")
                 }
             }
         }
+        reportKeys = keyed
         return sb.toString()
+    }
+
+    @Synchronized
+    fun castleFor(name: String): Pt? {
+        val n = name.take(12)
+        val c = mapPlayers.values.firstOrNull { it.v.name.take(12) == n }?.v ?: return null
+        return Pt(c.x, c.y, c.guild, c.name, c.realm)
     }
 
     // ---- JSON snapshot for the PHP server ----

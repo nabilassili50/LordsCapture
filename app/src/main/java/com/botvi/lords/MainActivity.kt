@@ -45,7 +45,12 @@ class MainActivity : Activity() {
     private lateinit var statusTv: TextView
     private lateinit var extrasTv: TextView
     private lateinit var coverTv: TextView
-    private lateinit var reportTv: TextView
+    private lateinit var reportBox: LinearLayout
+    private lateinit var copyBox2: LinearLayout
+    private lateinit var copyTv2: TextView
+    private var lastReportText = ""
+    private var lastReportKeys: Map<Int, String> = emptyMap()
+    private var selReportKey: String? = null
     private lateinit var allianceMap: AllianceMapView
     private var lastMapKey = -1L
     private lateinit var fortEt: EditText
@@ -391,14 +396,37 @@ class MainActivity : Activity() {
             override fun afterTextChanged(s: Editable?) { refresh(true) }
         })
         rep.addView(searchEt)
-        reportTv = tv("اختر قائمة من الأزرار أعلاه", 13f, cText).apply {
+        copyTv2 = tv("", 14f, cText, true).apply {
+            typeface = Typeface.MONOSPACE
             setTextIsSelectable(true)
-            setLineSpacing(0f, 1.2f)
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            textDirection = View.TEXT_DIRECTION_LTR
+            layoutParams = lp(0, WRAP, 1f)
+        }
+        val copyBtn2 = pill("📋 نسخ", cAccent, Color.WHITE) {
+            val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("castle", copyTv2.text.toString()))
+            Toast.makeText(this, "تم النسخ", Toast.LENGTH_SHORT).show()
+        }.apply { layoutParams = lp(WRAP, WRAP, 0f, 8, 0, 0, 0) }
+        copyBox2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(cField, 10, cAccent)
+            setPadding(dp(12), dp(8), dp(8), dp(8))
+            layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 8)
+            visibility = View.GONE
+            addView(copyTv2)
+            addView(copyBtn2)
+        }
+        rep.addView(copyBox2)
+        reportBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(dp(2), dp(4), dp(2), dp(8))
         }
-        rep.addView(reportTv)
+        rep.addView(reportBox)
+        renderReport("اختر قائمة من الأزرار أعلاه", emptyMap())
         rep.addView(pill("📤  مشاركة التقرير", cTile, cText) {
-            val t = reportTv.text.toString()
+            val t = lastReportText
             if (viewMode < 0 || t.isEmpty()) {
                 Toast.makeText(this, "اختر قائمة أولاً", Toast.LENGTH_SHORT).show()
             } else {
@@ -507,6 +535,41 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         refresh(true)
+    }
+
+    /** Report as rows: a line that belongs to a player is tappable and shows name + K/X/Y in a copy box. */
+    private fun renderReport(text: String, keys: Map<Int, String>) {
+        reportBox.removeAllViews()
+        for ((i, line) in text.split("\n").withIndex()) {
+            if (line.isEmpty()) {
+                reportBox.addView(View(this).apply { layoutParams = lp(MATCH, dp(6)) })
+                continue
+            }
+            val key = keys[i]
+            val on = key != null && key == selReportKey
+            reportBox.addView(tv(line, 13f, if (on) Color.parseColor("#FFE14D") else cText).apply {
+                setLineSpacing(0f, 1.15f)
+                if (key != null) {
+                    background = rounded(if (on) cStroke else cTile, 8)
+                    setPadding(dp(10), dp(8), dp(10), dp(8))
+                    layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 4)
+                    setOnClickListener {
+                        val pt = Store.castleFor(key)
+                        if (pt != null) {
+                            copyTv2.text = "${pt.name} K:${pt.realm} X:${pt.x} Y:${pt.y}"
+                        } else {
+                            copyTv2.text = key
+                            Toast.makeText(this@MainActivity, "لا توجد إحداثيات لهذا اللاعب بعد", Toast.LENGTH_SHORT).show()
+                        }
+                        copyBox2.visibility = View.VISIBLE
+                        selReportKey = key
+                        renderReport(lastReportText, lastReportKeys)
+                    }
+                } else {
+                    setPadding(dp(2), dp(3), dp(2), dp(3))
+                }
+            })
+        }
     }
 
     private fun pickAlliance(tag: String) {
@@ -624,7 +687,11 @@ class MainActivity : Activity() {
 
         if (viewMode >= 0) {
             val t = Store.report(viewMode, searchEt.text.toString())
-            if (reportTv.text.toString() != t) reportTv.text = t
+            if (t != lastReportText) {
+                lastReportText = t
+                lastReportKeys = Store.reportKeys
+                renderReport(t, lastReportKeys)
+            }
         }
         if (logTv.visibility == View.VISIBLE) logTv.text = Store.tail(30)
     }
