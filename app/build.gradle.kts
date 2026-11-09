@@ -11,8 +11,17 @@ android {
         applicationId = "com.botvi.lordscapture"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
+        // يزيد تلقائياً مع كل بناء على GitHub حتى يقبله أندرويد كتحديث
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1) + 100
         versionName = "1.0"
+    }
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("lords.jks")
+            storePassword = "lords123"
+            keyAlias = "lords"
+            keyPassword = "lords123"
+        }
     }
     buildTypes {
         release { isMinifyEnabled = false }
