@@ -15,11 +15,19 @@ object Store {
     private val popups = LinkedHashMap<Int, Stamped<CastlePopup>>()     // castle tap popups, by x/y
     private val mapObjs = LinkedHashMap<Int, Stamped<MapObject>>()      // non-player map objects (fortresses...), by x/y
     private val logs = ArrayDeque<String>()
+    // relocation tracking: player identity (name|realm) -> map key of the castle position last seen
+    private val nameIdx = HashMap<String, Int>()
+    class Move(val at: Long, val name: String, val guild: String, val realm: Int,
+               val fx: Int, val fy: Int, val tx: Int, val ty: Int, val gap: Long)
+    private val moves = ArrayList<Move>()
+    private const val MAX_MOVES = 500
+    private fun ident(name: String, realm: Int) = "$name|$realm"
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     @Volatile var status: String = "متوقف"
     @Volatile var frames: Long = 0
     @Volatile var dumpOn: Boolean = false
+    @Volatile var reportTotal: Int = 0       // number of rows in the last report (before the display limit)
     @Volatile var reportKeys: Map<Int, String> = emptyMap()   // report line index -> player name (tappable rows)
     @Volatile var fortType: Int = -1         // object type id the user marked as "fortress" (-1 = not chosen)
     @Volatile var version: Long = 0          // bumped on every change, so the UI can skip redraws
@@ -207,6 +215,7 @@ object Store {
                 val o = s.v
                 sb.append("X\t${s.at}\t${o.x}\t${o.y}\t${o.type}\t${esc(o.name)}\t${esc(o.guild)}\n")
             }
+            for (m in moves) sb.append("V\t${m.at}\t${esc(m.name)}\t${esc(m.guild)}\t${m.realm}\t${m.fx}\t${m.fy}\t${m.tx}\t${m.ty}\t${m.gap}\n")
             for ((name, list) in mightHist) for (pt in list) sb.append("H\t${esc(name)}\t${pt.at}\t${pt.might}\t${pt.kills}\n")
             for ((k, v) in ops) sb.append("O\t$k\t${v.count}\t${v.bytes}\t${v.parsed}\n")
             val tmp = File(d, "store.tmp")
@@ -237,7 +246,10 @@ object Store {
                             mapPlayers.put(key(x, y), Stamped(t[1].toLong(),
                                 MapPlayer(x, y, unesc(t[4]), unesc(t[5]), t[6].toInt(), t[7].toInt(), t[8].toInt(), t[9].toInt())))
                             ScanPlanner.onMapPlayer(x, y, t[1].toLong() * 1000)
+                            nameIdx[ident(unesc(t[4]), t[7].toInt())] = key(x, y)
                         }
+                        "V" -> moves.add(Move(t[1].toLong(), unesc(t[2]), unesc(t[3]), t[4].toInt(),
+                            t[5].toInt(), t[6].toInt(), t[7].toInt(), t[8].toInt(), t[9].toLong()))
                         "C" -> {
                             val x = t[2].toInt(); val y = t[3].toInt()
                             popups.put(key(x, y), Stamped(t[1].toLong(),
@@ -268,6 +280,8 @@ object Store {
     const val MODE_INACTIVE = 4
     const val MODE_CHANGES = 5
     const val MODE_FORTS = 6
+    const val MODE_MOVES = 7
+    const val FAST_MOVE_SEC = 9L   // seen at the old spot less than this long before the new one = moved "live"
     const val INACTIVE_DAYS = 3
     const val ALERT_PCT = 5.0
 
@@ -316,10 +330,12 @@ object Store {
         val now = System.currentTimeMillis() / 1000
         val sb = StringBuilder()
         val keyed = HashMap<Int, String>()
+        reportTotal = 0
         fun mark(n: String) { keyed[sb.count { it == '\n' }] = n }
         when (mode) {
             MODE_POWER -> {
                 val rows = might.values.map { it.v }.filter { ok(it.name) }.sortedByDescending { it.might }
+                reportTotal = rows.size
                 sb.append("قائمة القوة: ").append(rows.size).append('\n')
                 rows.take(limit).forEachIndexed { i, m ->
                     mark(m.name)
@@ -330,6 +346,7 @@ object Store {
                 val byName = mightMap()
                 val rows = mapPlayers.entries.filter { ok(it.value.v.name) || ok(it.value.v.guild) }
                     .sortedByDescending { popups[it.key]?.v?.might ?: byName[it.value.v.name.take(12)]?.might ?: 0L }
+                reportTotal = rows.size
                 sb.append("القلاع: ").append(rows.size).append('\n')
                 for ((k, st) in rows.take(limit)) {
                     val c = st.v
@@ -344,6 +361,7 @@ object Store {
             }
             MODE_GIFTS -> {
                 val rows = gifts.values.map { it.v }.filter { ok(it.name) }.sortedBy { it.sortIndex }
+                reportTotal = rows.size
                 sb.append("هدايا التحالف: ").append(rows.size).append(" | هدايا صيد مستلمة: ").append(received.size).append('\n')
                 rows.take(limit).forEach { g ->
                     mark(g.name)
@@ -372,6 +390,7 @@ object Store {
                 }
                 val rows = g.entries.filter { ok(it.key) || ok(full[it.key] ?: "") }
                     .sortedWith(compareByDescending<Map.Entry<String, Agg>> { it.value.n }.thenByDescending { it.value.total })
+                reportTotal = rows.size
                 sb.append("التحالفات: ").append(rows.size).append(" | قلاع ظاهرة: ").append(mapPlayers.size).append('\n')
                 for ((tag, a) in rows.take(limit)) {
                     val cx = Math.round(a.sx.toDouble() / a.n)
@@ -405,6 +424,7 @@ object Store {
                     val rows = mapObjs.values.map { it.v }.filter { it.type == fortType }
                         .filter { ok(it.guild) || ok(it.name) }
                         .sortedWith(compareBy({ it.guild.isEmpty() }, { it.guild }, { it.x }, { it.y }))
+                    reportTotal = (rows.size + 2) / 3
                     sb.append("الحصون (نوع $fortType): ").append(rows.size).append('\n')
                     for (o in rows.take(limit * 3)) {
                         sb.append("(${o.x},${o.y})")
@@ -414,6 +434,19 @@ object Store {
                     }
                 }
             }
+            MODE_MOVES -> {
+                val rows = moves.filter { ok(it.name) || ok(it.guild) }.asReversed()
+                reportTotal = rows.size
+                sb.append("لاعبون غيّروا مكانهم: ").append(rows.map { it.name }.toSet().size)
+                    .append(" | عدد الانتقالات: ").append(rows.size).append('\n')
+                rows.take(limit).forEach { m ->
+                    mark(m.name)
+                    val ago = now - m.at
+                    val agoTxt = if (ago < 90) "${ago}ث" else if (ago < 5400) "${ago / 60}د" else if (ago < 129600) "${ago / 3600}س" else "${ago / 86400}ي"
+                    val live = if (m.gap in 0..FAST_MOVE_SEC) " ⚡" else ""
+                    sb.append("${m.name}${if (m.guild.isNotEmpty()) " [${m.guild}]" else ""} | (${m.fx},${m.fy}) ← (${m.tx},${m.ty}) | قبل $agoTxt$live\n")
+                }
+            }
             MODE_INACTIVE -> {
                 val rows = might.values.map { it.v }.filter { ok(it.name) }
                 val online = rows.count { it.lastSeen == 0L }
@@ -421,6 +454,7 @@ object Store {
                     .map { it to (now - it.lastSeen) / 86400.0 }
                     .filter { it.second >= INACTIVE_DAYS }
                     .sortedByDescending { it.second }
+                reportTotal = idle.size
                 sb.append("خاملون ≥ $INACTIVE_DAYS أيام: ${idle.size} | متصل/غير معروف: $online\n")
                 idle.take(limit).forEach { (m, d) ->
                     mark(m.name)
@@ -436,6 +470,7 @@ object Store {
                     rows.add(Chg(n, b.might - a.might, b.kills - a.kills, a.might, b.might - f.might))
                 }
                 rows.sortByDescending { Math.abs(it.dm) }
+                reportTotal = rows.size
                 sb.append("لاعبون تغيرت قوتهم: ").append(rows.size).append('\n')
                 rows.take(limit).forEach { r ->
                     mark(r.name)
@@ -530,6 +565,15 @@ object Store {
                 .append(",\"gift_type\":${g.giftType},\"gift_group\":${g.giftGroup},\"count\":${g.count},\"quality\":${g.quality}")
                 .append(",\"monster_type\":${g.monsterType},\"seconds_ago\":${g.secondsAgo},\"at\":${s.at}}")
         }
+        sb.append("],\"moves\":[")
+        first = true
+        for (m in moves) {
+            if (!want("v:${m.at}|${m.name}|${m.tx}|${m.ty}", 1)) continue
+            if (!first) sb.append(','); first = false
+            sb.append("{\"name\":").append(js(m.name)).append(",\"guild\":").append(js(m.guild))
+                .append(",\"realm\":${m.realm},\"from_x\":${m.fx},\"from_y\":${m.fy},\"to_x\":${m.tx},\"to_y\":${m.ty}")
+                .append(",\"gap_sec\":${m.gap},\"at\":${m.at}}")
+        }
         sb.append("]}")
         return Snapshot(sb.toString(), items)
     }
@@ -543,7 +587,27 @@ object Store {
             is GiftEntry -> gifts.put(p.sortIndex, Stamped(now, p))
             is MightEntry -> { might.put(p.name, Stamped(now, p)); recordMight(p, now) }
             is GiftReceived -> received.add(Stamped(now, p))
-            is MapPlayer -> { mapPlayers.put(key(p.x, p.y), Stamped(now, p)); ScanPlanner.onMapPlayer(p.x, p.y) }
+            is MapPlayer -> {
+                val k = key(p.x, p.y)
+                val id = ident(p.name, p.realm)
+                val oldK = nameIdx[id]
+                if (oldK != null && oldK != k) {
+                    val old = mapPlayers[oldK]
+                    // same player (name + kingdom) now at another spot = relocation: drop the old castle, keep the history
+                    if (old != null && old.v.name == p.name && old.v.realm == p.realm) {
+                        moves.add(Move(now, p.name, p.guild, p.realm, old.v.x, old.v.y, p.x, p.y, now - old.at))
+                        if (moves.size > MAX_MOVES) moves.removeAt(0)
+                        log("🚚 " + p.name + ": (" + old.v.x + "," + old.v.y + ") ← (" + p.x + "," + p.y + ")")
+                        mapPlayers.remove(oldK)
+                        val pop = popups.remove(oldK)
+                        if (pop != null && !popups.containsKey(k)) popups[k] = pop   // keep rank/might until re-tapped
+                        ScanPlanner.forget(old.v.x, old.v.y)
+                    }
+                }
+                mapPlayers.put(k, Stamped(now, p))
+                nameIdx[id] = k
+                ScanPlanner.onMapPlayer(p.x, p.y)
+            }
             is MapObject -> {
                 // a player castle at the same spot always wins over a generic object
                 if (!mapPlayers.containsKey(key(p.x, p.y))) mapObjs.put(key(p.x, p.y), Stamped(now, p))
@@ -567,7 +631,7 @@ object Store {
 
     @Synchronized
     fun clear() {
-        gifts.clear(); might.clear(); received.clear(); mapPlayers.clear(); popups.clear(); mapObjs.clear(); frames = 0; dumps.clear(); mightHist.clear(); ops.clear(); ScanPlanner.reset(); sentHash.clear(); pendingHash.clear(); version++; saveLocked()
+        gifts.clear(); might.clear(); received.clear(); mapPlayers.clear(); popups.clear(); mapObjs.clear(); nameIdx.clear(); moves.clear(); frames = 0; dumps.clear(); mightHist.clear(); ops.clear(); ScanPlanner.reset(); sentHash.clear(); pendingHash.clear(); version++; saveLocked()
     }
 
     @Synchronized
@@ -579,6 +643,7 @@ object Store {
             "قلاع على الخريطة: ${mapPlayers.size}\n" +
             "نوافذ قلاع (إحداثيات/رتبة): ${popups.size}\n" +
             ScanPlanner.report() + "\n" +
+            "انتقالات لاعبين: ${moves.size}\n" +
             "لاعبون تغيرت قوتهم: ${mightHist.count { it.value.size > 1 }}" + opsBrief()
 
     private fun q(s: String) = "\"" + s.replace("\"", "\"\"") + "\""

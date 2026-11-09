@@ -75,6 +75,8 @@ class MainActivity : Activity() {
     private val modeChips = ArrayList<Pair<Int, Button>>()
     private val intervalChips = ArrayList<Pair<Int, Button>>()
     private var viewMode = -1
+    private var reportLimit = 29          // rows shown per list; the button below expands to 100
+    private lateinit var moreBtn: Button
     private var lastVer = -1L
     private var lastStatus = ""
 
@@ -376,10 +378,10 @@ class MainActivity : Activity() {
         val chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val defs = listOf(
             "👑 القوة" to Store.MODE_POWER, "🏰 قلاع" to Store.MODE_CASTLES, "🎁 هدايا" to Store.MODE_GIFTS,
-            "🛡 تحالفات" to Store.MODE_ALLIANCE, "🏯 حصون" to Store.MODE_FORTS, "💤 خاملون" to Store.MODE_INACTIVE, "📊 تغيّرات" to Store.MODE_CHANGES
+            "🛡 تحالفات" to Store.MODE_ALLIANCE, "🏯 حصون" to Store.MODE_FORTS, "💤 خاملون" to Store.MODE_INACTIVE, "📊 تغيّرات" to Store.MODE_CHANGES, "🚚 تنقّلات" to Store.MODE_MOVES
         )
         for ((t, m) in defs) {
-            val b = chip(t) { viewMode = m; restyleModes(); refresh(true) }
+            val b = chip(t) { viewMode = m; reportLimit = LIMIT_SMALL; lastReportText = ""; restyleModes(); refresh(true) }
             modeChips.add(m to b)
             chipRow.addView(b)
         }
@@ -424,6 +426,12 @@ class MainActivity : Activity() {
             setPadding(dp(2), dp(4), dp(2), dp(8))
         }
         rep.addView(reportBox)
+        moreBtn = pill("", cTile, cText) {
+            reportLimit = if (reportLimit == LIMIT_SMALL) LIMIT_BIG else LIMIT_SMALL
+            lastReportText = ""
+            refresh(true)
+        }.apply { visibility = View.GONE }
+        rep.addView(moreBtn)
         renderReport("اختر قائمة من الأزرار أعلاه", emptyMap())
         rep.addView(pill("📤  مشاركة التقرير", cTile, cText) {
             val t = lastReportText
@@ -686,13 +694,18 @@ class MainActivity : Activity() {
         uploadTv.visibility = if (up.isEmpty()) View.GONE else View.VISIBLE
 
         if (viewMode >= 0) {
-            val t = Store.report(viewMode, searchEt.text.toString())
+            val t = Store.report(viewMode, searchEt.text.toString(), reportLimit)
             if (t != lastReportText) {
                 lastReportText = t
                 lastReportKeys = Store.reportKeys
                 renderReport(t, lastReportKeys)
             }
-        }
+            val total = Store.reportTotal
+            if (total > LIMIT_SMALL) {
+                moreBtn.visibility = View.VISIBLE
+                moreBtn.text = if (reportLimit == LIMIT_SMALL) "⬇ عرض الكل حتى $LIMIT_BIG (${minOf(total, LIMIT_BIG)} من $total)" else "⬆ عرض $LIMIT_SMALL فقط"
+            } else moreBtn.visibility = View.GONE
+        } else moreBtn.visibility = View.GONE
         if (logTv.visibility == View.VISIBLE) logTv.text = Store.tail(30)
     }
 
@@ -729,6 +742,8 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        const val LIMIT_SMALL = 29
+        const val LIMIT_BIG = 100
         private const val LIST_MAX = 100
         private const val REQ_EXPORT = 42
         private const val REQ_DUMP = 43

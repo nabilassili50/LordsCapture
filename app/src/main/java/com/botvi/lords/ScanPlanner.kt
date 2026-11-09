@@ -40,6 +40,13 @@ object ScanPlanner {
         castleTapped[key(x, y)] = now
     }
 
+    /** A castle left this spot (relocation): stop asking to re-tap it. */
+    @Synchronized
+    fun forget(x: Int, y: Int) {
+        castleSeen.remove(key(x, y))
+        castleTapped.remove(key(x, y))
+    }
+
     /** Castles never tapped or whose popup is older than CASTLE_TIMEOUT_MS, oldest first. */
     @Synchronized
     fun dueCastles(limit: Int = 5, now: Long = System.currentTimeMillis()): List<Target> =
