@@ -55,6 +55,29 @@ data class MightEntry(
     val lastSeen: Long
 ) : ParsedPacket
 
+/** Castle tap popup (AC 08 0C): exact coordinates + real guild rank / VIP / might / kills. No player name here. */
+data class CastlePopup(
+    val x: Int,
+    val y: Int,
+    val guildFullName: String,
+    val vip: Int,
+    val guildRank: Int,
+    val might: Long,
+    val kills: Long
+) : ParsedPacket
+
+/** Player castle seen in a map-object reply (AC 08 02/03/0F/...): name + coordinates. */
+data class MapPlayer(
+    val x: Int,
+    val y: Int,
+    val name: String,
+    val guild: String,
+    val level: Int,
+    val realm: Int,
+    val statusFlags: Int,
+    val title: Int
+) : ParsedPacket
+
 /**
  * Game stream = [u16 size (includes these 2 bytes)] [payload] ...
  * feed() raw TCP bytes; onFrame gets each payload without the size prefix.
@@ -117,6 +140,13 @@ object PacketParser {
     private const val MIGHT_HEADER = 5
     private const val MIGHT_ENTRY_SIZE = 49   // was 48: entries drifted by 1 byte each
     private const val MIGHT_MIN_ENTRY = 48       // bytes actually read from each entry
+    private const val POPUP_MIN_SIZE = 60        // 3-byte header + packed CastlePopupInfo (57 bytes)
+    private const val OBJ_PLAYER = 8
+    private const val MAX_REALM = 120
+    private const val MAX_CASTLE_LEVEL = 25
+    private const val MAP_OBJ_MIN = 34            // GUID(4)+type(1)+name(13)+guild(3)+realm(2)+level(1)+flags/title/realmGuild(9)
+    private const val MAP_OBJ_STEP = 38           // same step the C++ parser uses after a hit
+    private val MAP_OPS = setOf(0x02, 0x03, 0x0F, 0x0D, 0x0E, 0x09, 0x18, 0x17, 0x16)
 
     fun parse(p: ByteArray, nowSec: Long = System.currentTimeMillis() / 1000): List<ParsedPacket> {
         if (p.size < 3) return emptyList()
@@ -174,7 +204,75 @@ object PacketParser {
                 )
             }
         }
+        if (op0 == 0xAC && op1 == 0x08) {
+            if (op2 == 0x0C) parsePopup(p, bb, out)
+            else if (op2 in MAP_OPS) scanPlayers(p, bb, out)
+        }
         return out
+    }
+
+    /** CastlePopupInfo is packed and starts at p[3]: GUID@12, guild@16(20), VIP@36, rank@37, might@44, kills@52. */
+    private fun parsePopup(p: ByteArray, bb: ByteBuffer, out: MutableList<ParsedPacket>) {
+        if (p.size < POPUP_MIN_SIZE) return
+        val xy = GuidCodec.decode(bb.getInt(12)) ?: return
+        out.add(
+            CastlePopup(
+                x = xy.first, y = xy.second,
+                guildFullName = cstr(p, 16, 20),
+                vip = p[36].toInt() and 0xFF,
+                guildRank = p[37].toInt() and 0xFF,
+                might = bb.getLong(44),
+                kills = bb.getLong(52)
+            )
+        )
+    }
+
+    /**
+     * Heuristic scan (port of SearchNextName): find GenericMapObject records of type PLAYER.
+     * Layout: GUID@0 type@4 name@5(13) guild@18(3) realm@21(u16) level@23 flags@24 title@25(u16).
+     */
+    private fun scanPlayers(p: ByteArray, bb: ByteBuffer, out: MutableList<ParsedPacket>) {
+        var i = 0
+        while (i + MAP_OBJ_MIN <= p.size) {
+            if ((p[i + 4].toInt() and 0xFF) == OBJ_PLAYER) {
+                val realm = bb.getShort(i + 21).toInt() and 0xFFFF
+                val level = p[i + 23].toInt() and 0xFF
+                if (realm <= MAX_REALM && level in 1..MAX_CASTLE_LEVEL &&
+                    p[i + 5].toInt() != 0 && isString(p, i + 5, 13) && isString(p, i + 18, 3)
+                ) {
+                    val xy = GuidCodec.decode(bb.getInt(i))
+                    if (xy != null) {
+                        // "Dark.nest" is an NPC nest (also type 8), not a player castle: keep stepping but don't emit it.
+                        if (cstr(p, i + 5, 13) == "Dark.nest") { i += MAP_OBJ_STEP; continue }
+                        out.add(
+                            MapPlayer(
+                                x = xy.first, y = xy.second,
+                                name = cstr(p, i + 5, 13),
+                                guild = cstr(p, i + 18, 3),
+                                level = level, realm = realm,
+                                statusFlags = p[i + 24].toInt() and 0xFF,
+                                title = bb.getShort(i + 25).toInt() and 0xFFFF
+                            )
+                        )
+                        i += MAP_OBJ_STEP
+                        continue
+                    }
+                }
+            }
+            i++
+        }
+    }
+
+    /** Printable bytes, then NUL padding up to [len]. */
+    private fun isString(p: ByteArray, off: Int, len: Int): Boolean {
+        var n = 0
+        while (n < len && p[off + n].toInt() != 0) {
+            val c = p[off + n].toInt() and 0xFF
+            if (c < 0x20 || c == 0x7F) return false
+            n++
+        }
+        while (n < len) { if (p[off + n].toInt() != 0) return false; n++ }
+        return true
     }
 
     private fun cstr(p: ByteArray, off: Int, maxLen: Int): String {

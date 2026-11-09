@@ -81,6 +81,11 @@ class CaptureService : Service() {
         val items = PacketParser.parse(payload)
         for (p in items) Store.add(p)
         if (items.isNotEmpty()) Store.log("parsed ${items.size} item(s) from a ${payload.size}-byte packet")
+        for (p in items) {
+            if (p is CastlePopup) Store.log("castle popup ${p.x},${p.y} [${p.guildFullName}] vip=${p.vip} rank=${p.guildRank} might=${p.might} kills=${p.kills}")
+        }
+        val mapCount = items.count { it is MapPlayer }
+        if (mapCount > 0) Store.log("map: $mapCount castle(s) with coordinates")
     }
 
     private fun stopCapture() {
