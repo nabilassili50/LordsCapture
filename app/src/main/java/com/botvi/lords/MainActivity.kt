@@ -53,6 +53,8 @@ class MainActivity : Activity() {
     private lateinit var mapInfoTv: TextView
     private lateinit var listBox: LinearLayout
     private lateinit var zoomBtn: Button
+    private lateinit var copyBox: LinearLayout
+    private lateinit var copyTv: TextView
     private lateinit var scroll: ScrollView
     private lateinit var mapCardV: LinearLayout
     private val allianceChips = ArrayList<Pair<String, Button>>()
@@ -284,7 +286,31 @@ class MainActivity : Activity() {
             setLineSpacing(0f, 1.15f)
             setPadding(dp(2), dp(8), dp(2), dp(4))
         }
+        mapInfoTv.textDirection = View.TEXT_DIRECTION_RTL
         mapCard.addView(mapInfoTv)
+        copyTv = tv("", 14f, cText, true).apply {
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            textDirection = View.TEXT_DIRECTION_LTR
+            layoutParams = lp(0, WRAP, 1f)
+        }
+        val copyBtn = pill("📋 نسخ", cAccent, Color.WHITE) {
+            val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("castle", copyTv.text.toString()))
+            Toast.makeText(this, "تم النسخ", Toast.LENGTH_SHORT).show()
+        }.apply { layoutParams = lp(WRAP, WRAP, 0f, 8, 0, 0, 0) }
+        copyBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(cField, 10, cAccent)
+            setPadding(dp(12), dp(8), dp(8), dp(8))
+            layoutParams = lp(MATCH, WRAP, 0f, 0, 6, 0, 8)
+            visibility = View.GONE
+            addView(copyTv)
+            addView(copyBtn)
+        }
+        mapCard.addView(copyBox)
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         mapCard.addView(listBox)
         updateMapInfo()
@@ -505,6 +531,13 @@ class MainActivity : Activity() {
         val sel = allianceMap.selected
         for ((t, b) in allianceChips) styleChip(b, t == sel)
         listBox.removeAllViews()
+        val cur = allianceMap.highlight
+        if (cur != null) {
+            copyTv.text = "${cur.name} K:${cur.realm} X:${cur.x} Y:${cur.y}"
+            copyBox.visibility = View.VISIBLE
+        } else {
+            copyBox.visibility = View.GONE
+        }
         if (sel == null) {
             mapInfoTv.text = "اضغط اسم تحالف (فوق الخريطة أو عليها) لعرض قلاعه، ثم اضغط اسم أي لاعب ليظهر مكانه على الخريطة"
             return
@@ -512,7 +545,7 @@ class MainActivity : Activity() {
         val mine = allianceMap.points.filter { it.tag == sel }
         if (mine.isEmpty()) { mapInfoTv.text = "[$sel] لا قلاع ظاهرة"; return }
         val xs = mine.map { it.x }.sorted(); val ys = mine.map { it.y }.sorted()
-        val sb = StringBuilder("[$sel] ${mine.size} قلعة\n")
+        val sb = StringBuilder("${mine.size} قلعة — [$sel]\n")
         sb.append("المركز (${xs[xs.size / 2]},${ys[ys.size / 2]}) | x ${xs.first()}–${xs.last()} | y ${ys.first()}–${ys.last()}")
         val fs = allianceMap.forts.filter { it.tag == sel }
         if (fs.isNotEmpty()) sb.append("\nحصون ${fs.size}: " + fs.take(12).joinToString(" ") { "(${it.x},${it.y})" })

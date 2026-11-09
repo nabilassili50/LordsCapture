@@ -276,10 +276,10 @@ object Store {
         var minX = Int.MAX_VALUE; var maxX = Int.MIN_VALUE; var minY = Int.MAX_VALUE; var maxY = Int.MIN_VALUE
     }
 
-    class Pt(val x: Int, val y: Int, val tag: String, val name: String = "")
+    class Pt(val x: Int, val y: Int, val tag: String, val name: String = "", val realm: Int = 0)
 
     @Synchronized
-    fun alliancePoints(): List<Pt> = mapPlayers.values.map { Pt(it.v.x, it.v.y, it.v.guild, it.v.name) }
+    fun alliancePoints(): List<Pt> = mapPlayers.values.map { Pt(it.v.x, it.v.y, it.v.guild, it.v.name, it.v.realm) }
 
     @Synchronized
     fun fortPoints(): List<Pt> =
