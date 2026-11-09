@@ -309,7 +309,7 @@ object Store {
     }
 
     @Synchronized
-    fun report(mode: Int, query: String, limit: Int = 60): String {
+    fun report(mode: Int, query: String, limit: Int = 100): String {
         val qy = query.trim()
         fun ok(name: String) = qy.isEmpty() || name.contains(qy, ignoreCase = true)
         val now = System.currentTimeMillis() / 1000

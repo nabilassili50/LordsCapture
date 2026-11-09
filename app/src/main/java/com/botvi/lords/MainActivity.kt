@@ -51,6 +51,10 @@ class MainActivity : Activity() {
     private lateinit var fortEt: EditText
     private lateinit var chipRowAl: LinearLayout
     private lateinit var mapInfoTv: TextView
+    private lateinit var listBox: LinearLayout
+    private lateinit var zoomBtn: Button
+    private lateinit var scroll: ScrollView
+    private lateinit var mapCardV: LinearLayout
     private val allianceChips = ArrayList<Pair<String, Button>>()
     private lateinit var searchEt: EditText
     private lateinit var prefixEt: EditText
@@ -256,6 +260,7 @@ class MainActivity : Activity() {
 
         // alliance map card
         val mapCard = card("خريطة التحالفات")
+        mapCardV = mapCard
         allianceMap = AllianceMapView(this).apply { layoutParams = lp(MATCH, dp(320), 0f, 0, 0, 0, 0) }
         chipRowAl = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         mapCard.addView(HorizontalScrollView(this).apply {
@@ -263,7 +268,16 @@ class MainActivity : Activity() {
             layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 8)
             addView(chipRowAl)
         })
-        allianceMap.onSelect = { updateMapInfo() }
+        allianceMap.onSelect = { allianceMap.highlight = null; updateMapInfo() }
+        zoomBtn = pill("⟲ ×1", cTile, cText) { allianceMap.resetZoom() }
+        allianceMap.onZoom = { z ->
+            zoomBtn.text = "⟲ ×" + (if (z >= 10f) z.toInt().toString() else String.format(java.util.Locale.US, "%.1f", z))
+        }
+        mapCard.addView(rowOf(
+            half(pill("＋ تقريب", cTile, cText) { allianceMap.zoomIn() }, true),
+            half(pill("－ تبعيد", cTile, cText) { allianceMap.zoomOut() }),
+            half(zoomBtn)
+        ))
         mapCard.addView(allianceMap)
         mapInfoTv = tv("", 12f, cText).apply {
             setTextIsSelectable(true)
@@ -271,6 +285,8 @@ class MainActivity : Activity() {
             setPadding(dp(2), dp(8), dp(2), dp(4))
         }
         mapCard.addView(mapInfoTv)
+        listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        mapCard.addView(listBox)
         updateMapInfo()
         mapCard.addView(label("نوع الحصن (رقم) — شاهد قائمة 🏯 حصون لمعرفة الرقم"))
         Store.fortType = prefs.getInt("fort_type", -1)
@@ -453,10 +469,11 @@ class MainActivity : Activity() {
         logCard.addView(logTv)
         root.addView(logCard)
 
-        setContentView(ScrollView(this).apply {
+        scroll = ScrollView(this).apply {
             setBackgroundColor(cBg)
             addView(root)
-        })
+        }
+        setContentView(scroll)
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -487,21 +504,35 @@ class MainActivity : Activity() {
     private fun updateMapInfo() {
         val sel = allianceMap.selected
         for ((t, b) in allianceChips) styleChip(b, t == sel)
+        listBox.removeAllViews()
         if (sel == null) {
-            mapInfoTv.text = "اضغط اسم تحالف (فوق الخريطة أو عليها) لإظهار أماكنه وإحداثياته"
+            mapInfoTv.text = "اضغط اسم تحالف (فوق الخريطة أو عليها) لعرض قلاعه، ثم اضغط اسم أي لاعب ليظهر مكانه على الخريطة"
             return
         }
         val mine = allianceMap.points.filter { it.tag == sel }
         if (mine.isEmpty()) { mapInfoTv.text = "[$sel] لا قلاع ظاهرة"; return }
         val xs = mine.map { it.x }.sorted(); val ys = mine.map { it.y }.sorted()
         val sb = StringBuilder("[$sel] ${mine.size} قلعة\n")
-        sb.append("المركز (${xs[xs.size / 2]},${ys[ys.size / 2]}) | x ${xs.first()}–${xs.last()} | y ${ys.first()}–${ys.last()}\n")
+        sb.append("المركز (${xs[xs.size / 2]},${ys[ys.size / 2]}) | x ${xs.first()}–${xs.last()} | y ${ys.first()}–${ys.last()}")
         val fs = allianceMap.forts.filter { it.tag == sel }
-        if (fs.isNotEmpty()) sb.append("حصون ${fs.size}: " + fs.take(12).joinToString(" ") { "(${it.x},${it.y})" } + "\n")
-        sb.append('\n')
-        for (p in mine.sortedWith(compareBy({ it.x }, { it.y })).take(40)) sb.append("${p.name} (${p.x},${p.y})\n")
-        if (mine.size > 40) sb.append("… +${mine.size - 40}")
+        if (fs.isNotEmpty()) sb.append("\nحصون ${fs.size}: " + fs.take(12).joinToString(" ") { "(${it.x},${it.y})" })
         mapInfoTv.text = sb.toString()
+        val hl = allianceMap.highlight
+        for (p in mine.sortedWith(compareBy({ it.x }, { it.y })).take(100)) {
+            val on = hl != null && hl.x == p.x && hl.y == p.y
+            listBox.addView(tv("${p.name}  (${p.x},${p.y})", 13f, if (on) Color.parseColor("#FFE14D") else cText).apply {
+                background = rounded(if (on) cStroke else cTile, 8)
+                setPadding(dp(10), dp(9), dp(10), dp(9))
+                layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 4)
+                setOnClickListener {
+                    allianceMap.highlight = if (on) null else p
+                    allianceMap.invalidate()
+                    updateMapInfo()
+                    if (!on) { allianceMap.focus(p); scroll.smoothScrollTo(0, mapCardV.top) }
+                }
+            })
+        }
+        if (mine.size > 100) listBox.addView(tv("… +${mine.size - 100}", 12f, cMuted))
     }
 
     private fun refresh(forceNow: Boolean = false) {
