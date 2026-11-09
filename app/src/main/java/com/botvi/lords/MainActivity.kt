@@ -25,6 +25,11 @@ class MainActivity : Activity() {
     private lateinit var prefixEt: EditText
     private lateinit var portEt: EditText
     private lateinit var pdPortEt: EditText
+    private lateinit var urlEt: EditText
+    private lateinit var tokEt: EditText
+    private lateinit var searchEt: EditText
+    private lateinit var reportTv: TextView
+    private var viewMode = -1
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
         override fun run() {
@@ -52,6 +57,15 @@ class MainActivity : Activity() {
     private fun btn(t: String, onClick: () -> Unit) = Button(this).apply {
         text = t
         setOnClickListener { onClick() }
+    }
+
+    private fun modeBtn(t: String, m: Int) = btn(t) { viewMode = m; refresh() }.apply {
+        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+    }
+
+    private fun row(vararg b: Button) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        b.forEach { addView(it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -82,6 +96,13 @@ class MainActivity : Activity() {
         root.addView(label("منفذ HTTP في PCAPdroid"))
         pdPortEt = field("8080", prefs.getString("pd", "8080") ?: "8080", true)
         root.addView(pdPortEt)
+
+        root.addView(label("رابط رفع السيرفر (ingest.php) — اختياري"))
+        urlEt = field("http://192.168.1.5:8080/lords/ingest.php", prefs.getString("up_url", "") ?: "", false)
+        root.addView(urlEt)
+        root.addView(label("مفتاح الرفع (token)"))
+        tokEt = field("token", prefs.getString("up_tok", "") ?: "", false)
+        root.addView(tokEt)
 
         root.addView(btn("▶ ابدأ") {
             prefs.edit()
@@ -141,8 +162,47 @@ class MainActivity : Activity() {
             layoutDirection = View.LAYOUT_DIRECTION_LTR
             setPadding(0, dp(12), 0, 0)
         }
+        root.addView(btn("☁ رفع للسيرفر الآن") {
+            val u = urlEt.text.toString().trim()
+            val tk = tokEt.text.toString().trim()
+            if (u.isEmpty()) {
+                Toast.makeText(this, "أدخل رابط السيرفر أولاً", Toast.LENGTH_SHORT).show()
+                return@btn
+            }
+            prefs.edit().putString("up_url", u).putString("up_tok", tk).apply()
+            Toast.makeText(this, "جاري الرفع...", Toast.LENGTH_SHORT).show()
+            Uploader.post(u, tk) { msg ->
+                Store.log(msg)
+                runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+            }
+        })
         root.addView(statusTv)
         root.addView(summaryTv)
+
+        root.addView(label("القوائم والتقارير"))
+        searchEt = field("بحث بالاسم / التحالف", "", false)
+        root.addView(searchEt)
+        root.addView(row(modeBtn("👑 القوة", Store.MODE_POWER), modeBtn("🏰 قلاع", Store.MODE_CASTLES), modeBtn("🎁 هدايا", Store.MODE_GIFTS)))
+        root.addView(row(modeBtn("🛡 تحالفات", Store.MODE_ALLIANCE), modeBtn("💤 خاملون", Store.MODE_INACTIVE), modeBtn("📊 تغيّرات", Store.MODE_CHANGES)))
+        root.addView(btn("📤 مشاركة التقرير") {
+            val t = reportTv.text.toString()
+            if (t.isEmpty()) {
+                Toast.makeText(this, "اختر قائمة أولاً", Toast.LENGTH_SHORT).show()
+                return@btn
+            }
+            val i = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, t)
+            }
+            startActivity(Intent.createChooser(i, "مشاركة"))
+        })
+        reportTv = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.DEFAULT
+            setTextIsSelectable(true)
+            setPadding(0, dp(8), 0, dp(8))
+        }
+        root.addView(reportTv)
         root.addView(logTv)
 
         setContentView(ScrollView(this).apply { addView(root) })
@@ -158,6 +218,10 @@ class MainActivity : Activity() {
         statusTv.text = "الحالة: " + Store.status
         summaryTv.text = Store.summary()
         logTv.text = Store.tail(40)
+        if (viewMode >= 0) {
+            val t = Store.report(viewMode, searchEt.text.toString())
+            if (reportTv.text.toString() != t) reportTv.text = t
+        }
     }
 
     override fun onResume() {

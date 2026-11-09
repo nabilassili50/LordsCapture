@@ -50,6 +50,10 @@ object Store {
         val list = mightHist.getOrPut(m.name) { ArrayList() }
         val last = list.lastOrNull()
         if (last == null || last.might != m.might || last.kills != m.kills) {
+            if (last != null && last.might > 0) {
+                val d = m.might - last.might
+                if (Math.abs(d) * 100.0 / last.might >= ALERT_PCT) log("⚠ " + m.name + ": القوة " + sgn(d))
+            }
             list.add(MightPoint(now, m.might, m.kills))
             if (list.size > 200) list.removeAt(0)
         }
@@ -198,6 +202,192 @@ object Store {
             }
         } catch (_: Exception) {
         }
+    }
+
+
+    // ---- reports: lists, alliances, inactive, changes ----
+    const val MODE_POWER = 0
+    const val MODE_CASTLES = 1
+    const val MODE_GIFTS = 2
+    const val MODE_ALLIANCE = 3
+    const val MODE_INACTIVE = 4
+    const val MODE_CHANGES = 5
+    const val INACTIVE_DAYS = 3
+    const val ALERT_PCT = 5.0
+
+    private class Agg { var n = 0; var withMight = 0; var total = 0L; var kills = 0L; var lvl = 0L }
+    private class Chg(val name: String, val dm: Long, val dk: Long, val prev: Long, val total: Long)
+
+    private fun fmtNum(v: Long): String {
+        val a = Math.abs(v.toDouble())
+        return when {
+            a >= 1e9 -> String.format(Locale.US, "%.2fB", v / 1e9)
+            a >= 1e6 -> String.format(Locale.US, "%.1fM", v / 1e6)
+            a >= 1e3 -> String.format(Locale.US, "%.1fK", v / 1e3)
+            else -> v.toString()
+        }
+    }
+
+    private fun sgn(v: Long) = (if (v > 0) "+" else "") + fmtNum(v)
+
+    private fun mightMap(): Map<String, MightEntry> {
+        val r = HashMap<String, MightEntry>()
+        for (s in might.values) r[s.v.name.take(12)] = s.v
+        return r
+    }
+
+    @Synchronized
+    fun report(mode: Int, query: String, limit: Int = 60): String {
+        val qy = query.trim()
+        fun ok(name: String) = qy.isEmpty() || name.contains(qy, ignoreCase = true)
+        val now = System.currentTimeMillis() / 1000
+        val sb = StringBuilder()
+        when (mode) {
+            MODE_POWER -> {
+                val rows = might.values.map { it.v }.filter { ok(it.name) }.sortedByDescending { it.might }
+                sb.append("قائمة القوة: ").append(rows.size).append('\n')
+                rows.take(limit).forEachIndexed { i, m ->
+                    sb.append("${i + 1}. ${m.name} | ${fmtNum(m.might)} | قتلى ${fmtNum(m.kills)} | رتبة ${m.rank}\n")
+                }
+            }
+            MODE_CASTLES -> {
+                val byName = mightMap()
+                val rows = mapPlayers.entries.filter { ok(it.value.v.name) || ok(it.value.v.guild) }
+                    .sortedByDescending { popups[it.key]?.v?.might ?: byName[it.value.v.name.take(12)]?.might ?: 0L }
+                sb.append("القلاع: ").append(rows.size).append('\n')
+                for ((k, st) in rows.take(limit)) {
+                    val c = st.v
+                    val pop = popups[k]?.v
+                    val mg = pop?.might ?: byName[c.name.take(12)]?.might
+                    sb.append("${c.name} [${c.guild}] (${c.x},${c.y}) م${c.level}")
+                    if (pop != null) sb.append(" VIP ${pop.vip} رتبة ${pop.guildRank}")
+                    if (mg != null) sb.append(" | ${fmtNum(mg)}")
+                    sb.append('\n')
+                }
+            }
+            MODE_GIFTS -> {
+                val rows = gifts.values.map { it.v }.filter { ok(it.name) }.sortedBy { it.sortIndex }
+                sb.append("هدايا التحالف: ").append(rows.size).append(" | هدايا صيد مستلمة: ").append(received.size).append('\n')
+                rows.take(limit).forEach { g ->
+                    sb.append("${g.name} | نوع ${g.giftType}/${g.giftGroup} | ×${g.count} | جودة ${g.quality}\n")
+                }
+            }
+            MODE_ALLIANCE -> {
+                val byName = mightMap()
+                val g = HashMap<String, Agg>()
+                for ((k, st) in mapPlayers) {
+                    val c = st.v
+                    val tag = if (c.guild.isBlank()) "(بدون تحالف)" else c.guild
+                    val a = g.getOrPut(tag) { Agg() }
+                    a.n++
+                    a.lvl += c.level
+                    val pop = popups[k]?.v
+                    val mg = pop?.might ?: byName[c.name.take(12)]?.might
+                    val kl = pop?.kills ?: byName[c.name.take(12)]?.kills
+                    if (mg != null) { a.withMight++; a.total += mg; a.kills += (kl ?: 0L) }
+                }
+                val rows = g.entries.filter { ok(it.key) }.sortedByDescending { it.value.total }
+                sb.append("التحالفات: ").append(rows.size).append('\n')
+                for ((tag, a) in rows.take(limit)) {
+                    val avg = if (a.withMight > 0) a.total / a.withMight else 0L
+                    val lv = String.format(Locale.US, "%.1f", a.lvl.toDouble() / maxOf(a.n, 1))
+                    sb.append("[$tag] قلاع ${a.n} (بقوة معروفة ${a.withMight}) | المجموع ${fmtNum(a.total)} | المتوسط ${fmtNum(avg)} | قتلى ${fmtNum(a.kills)} | م$lv\n")
+                }
+            }
+            MODE_INACTIVE -> {
+                val rows = might.values.map { it.v }.filter { ok(it.name) }
+                val online = rows.count { it.lastSeen == 0L }
+                val idle = rows.filter { it.lastSeen > 0L }
+                    .map { it to (now - it.lastSeen) / 86400.0 }
+                    .filter { it.second >= INACTIVE_DAYS }
+                    .sortedByDescending { it.second }
+                sb.append("خاملون ≥ $INACTIVE_DAYS أيام: ${idle.size} | متصل/غير معروف: $online\n")
+                idle.take(limit).forEach { (m, d) ->
+                    val ds = String.format(Locale.US, "%.1f", d)
+                    sb.append("${m.name} | $ds يوم | ${fmtNum(m.might)}\n")
+                }
+            }
+            MODE_CHANGES -> {
+                val rows = ArrayList<Chg>()
+                for ((n, l) in mightHist) {
+                    if (l.size < 2 || !ok(n)) continue
+                    val a = l[l.size - 2]; val b = l[l.size - 1]; val f = l[0]
+                    rows.add(Chg(n, b.might - a.might, b.kills - a.kills, a.might, b.might - f.might))
+                }
+                rows.sortByDescending { Math.abs(it.dm) }
+                sb.append("لاعبون تغيرت قوتهم: ").append(rows.size).append('\n')
+                rows.take(limit).forEach { r ->
+                    val pct = if (r.prev > 0) String.format(Locale.US, "%.1f", r.dm * 100.0 / r.prev) else "-"
+                    sb.append("${r.name} | ${sgn(r.dm)} ($pct%) | قتلى ${sgn(r.dk)} | منذ البداية ${sgn(r.total)}\n")
+                }
+            }
+        }
+        return sb.toString()
+    }
+
+    // ---- JSON snapshot for the PHP server ----
+    private fun js(s: String): String {
+        val sb = StringBuilder("\"")
+        for (c in s) {
+            when (c) {
+                '"' -> sb.append("\\\"")
+                '\\' -> sb.append("\\\\")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                else -> if (c < ' ') sb.append(String.format("\\u%04x", c.code)) else sb.append(c)
+            }
+        }
+        sb.append('"')
+        return sb.toString()
+    }
+
+    private fun nn(v: Any?) = v?.toString() ?: "null"
+
+    @Synchronized
+    fun json(token: String): String {
+        val sb = StringBuilder()
+        sb.append("{\"token\":").append(js(token)).append(",\"sent_at\":").append(System.currentTimeMillis() / 1000)
+        sb.append(",\"might\":[")
+        var first = true
+        for (s in might.values) {
+            val m = s.v
+            if (!first) sb.append(','); first = false
+            sb.append("{\"name\":").append(js(m.name))
+                .append(",\"rank\":${m.rank},\"might\":${m.might},\"kills\":${m.kills},\"last_seen\":${m.lastSeen},\"at\":${s.at}}")
+        }
+        sb.append("],\"castles\":[")
+        first = true
+        for ((k, st) in mapPlayers) {
+            val c = st.v
+            val pop = popups[k]?.v
+            if (!first) sb.append(','); first = false
+            sb.append("{\"x\":${c.x},\"y\":${c.y},\"name\":").append(js(c.name))
+                .append(",\"guild\":").append(js(c.guild))
+                .append(",\"level\":${c.level},\"realm\":${c.realm},\"flags\":${c.statusFlags},\"title\":${c.title}")
+                .append(",\"vip\":${nn(pop?.vip)},\"guild_rank\":${nn(pop?.guildRank)}")
+                .append(",\"guild_full_name\":").append(if (pop != null) js(pop.guildFullName) else "null")
+                .append(",\"might\":${nn(pop?.might)},\"kills\":${nn(pop?.kills)},\"at\":${st.at}}")
+        }
+        for ((k, st) in popups) {
+            if (mapPlayers.containsKey(k)) continue
+            val p = st.v
+            if (!first) sb.append(','); first = false
+            sb.append("{\"x\":${p.x},\"y\":${p.y},\"name\":\"\",\"guild\":\"\",\"level\":null,\"realm\":null,\"flags\":null,\"title\":null")
+                .append(",\"vip\":${p.vip},\"guild_rank\":${p.guildRank},\"guild_full_name\":").append(js(p.guildFullName))
+                .append(",\"might\":${p.might},\"kills\":${p.kills},\"at\":${st.at}}")
+        }
+        sb.append("],\"gifts\":[")
+        first = true
+        for (s in gifts.values) {
+            val g = s.v
+            if (!first) sb.append(','); first = false
+            sb.append("{\"sort_index\":${g.sortIndex},\"name\":").append(js(g.name))
+                .append(",\"gift_type\":${g.giftType},\"gift_group\":${g.giftGroup},\"count\":${g.count},\"quality\":${g.quality}")
+                .append(",\"monster_type\":${g.monsterType},\"seconds_ago\":${g.secondsAgo},\"at\":${s.at}}")
+        }
+        sb.append("]}")
+        return sb.toString()
     }
 
     private fun key(x: Int, y: Int) = x * 2048 + y
