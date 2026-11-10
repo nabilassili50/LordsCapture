@@ -350,6 +350,46 @@ object Store {
     @Synchronized
     fun objCount(): Int = mapObjs.size
 
+    /**
+     * Empty spots: coordinates with no known castle/object within (gap-1) tiles, but inside an area the app
+     * has actually seen (a known object within 10 tiles). Nearest to (cx,cy) first, spread out by >= max(gap,3).
+     */
+    @Synchronized
+    fun freeSpots(cx: Int, cy: Int, gap: Int, count: Int, radius: Int = 40): List<Pt> {
+        val occ = HashSet<Int>()
+        for (p in mapPlayers.values) occ.add(p.v.x * 2048 + p.v.y)
+        for (o in mapObjs.values) occ.add(o.v.x * 2048 + o.v.y)
+        fun near(x: Int, y: Int, r: Int): Boolean {
+            for (dx in -r..r) {
+                val xx = x + dx
+                if (xx < 0) continue
+                for (dy in -r..r) {
+                    val yy = y + dy
+                    if (yy < 0) continue
+                    if (occ.contains(xx * 2048 + yy)) return true
+                }
+            }
+            return false
+        }
+        val g = gap.coerceIn(1, 10)
+        val cand = ArrayList<Pt>()
+        for (x in maxOf(0, cx - radius)..minOf(512, cx + radius)) {
+            for (y in maxOf(0, cy - radius)..minOf(1024, cy + radius)) {
+                if (near(x, y, g - 1)) continue
+                if (!near(x, y, 10)) continue
+                cand.add(Pt(x, y, "", "فارغ"))
+            }
+        }
+        cand.sortBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }
+        val out = ArrayList<Pt>()
+        val sp = maxOf(g, 3)
+        for (c in cand) {
+            if (out.size >= count) break
+            if (out.none { Math.abs(it.x - c.x) < sp && Math.abs(it.y - c.y) < sp }) out.add(c)
+        }
+        return out
+    }
+
     private class Chg(val name: String, val dm: Long, val dk: Long, val prev: Long, val total: Long)
 
     private fun fmtNum(v: Long): String {

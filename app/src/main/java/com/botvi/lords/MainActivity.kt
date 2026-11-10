@@ -58,6 +58,13 @@ class MainActivity : Activity() {
     private lateinit var chipRowAl: LinearLayout
     private lateinit var mapInfoTv: TextView
     private lateinit var listBox: LinearLayout
+    private lateinit var listScroll: ScrollView
+    private lateinit var listMoreBtn: Button
+    private var membersExpanded = false
+    private lateinit var freeBtn: Button
+    private lateinit var freeBox: LinearLayout
+    private var showFree = false
+    private var freeGap = 3
     private lateinit var zoomBtn: Button
     private lateinit var copyBox: LinearLayout
     private lateinit var copyTv: TextView
@@ -76,7 +83,7 @@ class MainActivity : Activity() {
     private val modeChips = ArrayList<Pair<Int, Button>>()
     private val intervalChips = ArrayList<Pair<Int, Button>>()
     private var viewMode = -1
-    private var reportLimit = 29          // rows shown per list; the button below expands to 100
+    private var reportLimit = 15          // rows shown per list; the button below expands to 100
     private lateinit var moreBtn: Button
     private var lastVer = -1L
     private var lastStatus = ""
@@ -320,7 +327,41 @@ class MainActivity : Activity() {
         }
         mapCard.addView(copyBox)
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        mapCard.addView(listBox)
+        listScroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = true
+            layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 0)
+            setOnTouchListener { v, _ ->
+                if (membersExpanded) v.parent?.requestDisallowInterceptTouchEvent(true)
+                false
+            }
+            addView(listBox)
+        }
+        mapCard.addView(listScroll)
+        listMoreBtn = pill("", cTile, cText) {
+            membersExpanded = !membersExpanded
+            updateMapInfo()
+        }.apply { visibility = View.GONE; layoutParams = lp(MATCH, WRAP, 0f, 0, 4, 0, 4) }
+        mapCard.addView(listMoreBtn)
+
+        // empty castle spots
+        freeGap = prefs.getInt("free_gap", 3)
+        freeBtn = pill("🕳 إظهار الأماكن الفارغة", cTile, cText) { showFree = !showFree; recomputeFree() }
+            .apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 6, 0, 4) }
+        mapCard.addView(freeBtn)
+        val gapEt = field("3", freeGap.toString(), true)
+        gapEt.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                freeGap = (s?.toString()?.trim()?.toIntOrNull() ?: 3).coerceIn(1, 10)
+                prefs.edit().putInt("free_gap", freeGap).apply()
+                if (showFree) recomputeFree()
+            }
+        })
+        mapCard.addView(label("أقل مسافة (خانات) بين القلعة الفارغة وأقرب قلعة/كائن معروف"))
+        mapCard.addView(gapEt)
+        freeBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        mapCard.addView(freeBox)
         updateMapInfo()
         mapCard.addView(label("نوع الحصن (رقم) — شاهد قائمة 🏯 حصون لمعرفة الرقم"))
         Store.fortType = prefs.getInt("fort_type", -1)
@@ -599,12 +640,12 @@ class MainActivity : Activity() {
             }
             val key = keys[i]
             val on = key != null && key == selReportKey
-            reportBox.addView(tv(line, 13f, if (on) Color.parseColor("#FFE14D") else cText).apply {
+            reportBox.addView(tv(line, 12.5f, if (on) Color.parseColor("#FFE14D") else cText).apply {
                 setLineSpacing(0f, 1.15f)
                 if (key != null) {
                     background = rounded(if (on) cStroke else cTile, 8)
-                    setPadding(dp(10), dp(8), dp(10), dp(8))
-                    layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 4)
+                    setPadding(dp(10), dp(6), dp(10), dp(6))
+                    layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 3)
                     setOnClickListener {
                         val pt = Store.castleFor(key)
                         if (pt != null) {
@@ -620,6 +661,54 @@ class MainActivity : Activity() {
                     }
                 } else {
                     setPadding(dp(2), dp(3), dp(2), dp(3))
+                }
+            })
+        }
+    }
+
+    private fun recomputeFree() {
+        freeBox.removeAllViews()
+        if (!showFree) {
+            freeBtn.text = "🕳 إظهار الأماكن الفارغة"
+            allianceMap.freeSpots = emptyList()
+            allianceMap.invalidate()
+            return
+        }
+        freeBtn.text = "🕳 إخفاء الأماكن الفارغة"
+        val pts = allianceMap.points
+        if (pts.isEmpty()) {
+            freeBox.addView(tv("لا قلاع ملتقطة بعد", 12f, cMuted))
+            return
+        }
+        val sel = allianceMap.selected
+        val base = if (sel != null) pts.filter { it.tag == sel }.ifEmpty { pts } else pts
+        val hl = allianceMap.highlight
+        val cx = hl?.x ?: base.map { it.x }.sorted()[base.size / 2]
+        val cy = hl?.y ?: base.map { it.y }.sorted()[base.size / 2]
+        val spots = Store.freeSpots(cx, cy, freeGap, 10)
+        allianceMap.freeSpots = spots
+        allianceMap.invalidate()
+        val realm = pts.first().realm
+        freeBox.addView(tv("أماكن فارغة قرب ($cx,$cy) — حسب ما التقطه التطبيق فقط، تأكد منها داخل اللعبة", 11f, cMuted).apply {
+            setPadding(dp(2), dp(2), dp(2), dp(6))
+        })
+        if (spots.isEmpty()) {
+            freeBox.addView(tv("لا يوجد مكان فارغ بهذه المسافة — جرّب تصغير الرقم", 12f, cOrange))
+            return
+        }
+        for ((i, f) in spots.withIndex()) {
+            freeBox.addView(tv("${i + 1}.  K:$realm  X:${f.x}  Y:${f.y}", 12f, cText).apply {
+                maxLines = 1
+                background = rounded(cTile, 8)
+                setPadding(dp(10), dp(5), dp(10), dp(5))
+                layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 3)
+                setOnClickListener {
+                    val p = Store.Pt(f.x, f.y, "", "فارغ", realm)
+                    allianceMap.highlight = p
+                    allianceMap.invalidate()
+                    updateMapInfo()
+                    allianceMap.focus(p)
+                    scroll.smoothScrollTo(0, mapCardV.top)
                 }
             })
         }
@@ -662,6 +751,7 @@ class MainActivity : Activity() {
             ordered = pts.sortedWith(compareBy({ it.tag.isEmpty() }, { it.tag }, { it.x }, { it.y }))
         } else if (mine.isEmpty()) {
             mapInfoTv.text = "[$sel] لا قلاع ظاهرة"
+            listMoreBtn.visibility = View.GONE
             return
         } else {
             val xs = mine.map { it.x }.sorted(); val ys = mine.map { it.y }.sorted()
@@ -675,7 +765,7 @@ class MainActivity : Activity() {
             ordered = mine.sortedWith(compareBy({ it.x }, { it.y })) +
                 pts.filter { it.tag != sel }.sortedBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }
         }
-        val shown = ordered.take(LIST_MAX)
+        val shown = ordered.take(if (membersExpanded) LIST_MAX else LIST_COMPACT)
         val hl = allianceMap.highlight
         for ((idx, p) in shown.withIndex()) {
             if (sel != null && idx == mine.size) {
@@ -683,10 +773,12 @@ class MainActivity : Activity() {
             }
             val on = hl != null && hl.x == p.x && hl.y == p.y
             val tagTxt = if (p.tag.isNotEmpty() && p.tag != sel) "  [${p.tag}]" else ""
-            listBox.addView(tv("${p.name}  (${p.x},${p.y})$tagTxt", 13f, if (on) Color.parseColor("#FFE14D") else cText).apply {
+            listBox.addView(tv("${p.name}  (${p.x},${p.y})$tagTxt", 12f, if (on) Color.parseColor("#FFE14D") else cText).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 background = rounded(if (on) cStroke else cTile, 8)
-                setPadding(dp(10), dp(9), dp(10), dp(9))
-                layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 4)
+                setPadding(dp(10), dp(5), dp(10), dp(5))
+                layoutParams = lp(MATCH, WRAP, 0f, 0, 0, 0, 3)
                 setOnClickListener {
                     allianceMap.highlight = if (on) null else p
                     allianceMap.invalidate()
@@ -695,7 +787,14 @@ class MainActivity : Activity() {
                 }
             })
         }
-        if (ordered.size > LIST_MAX) listBox.addView(tv("… +${ordered.size - LIST_MAX}", 12f, cMuted))
+        if (membersExpanded && ordered.size > LIST_MAX) listBox.addView(tv("… +${ordered.size - LIST_MAX}", 12f, cMuted))
+        if (ordered.size > LIST_COMPACT) {
+            listMoreBtn.visibility = View.VISIBLE
+            listMoreBtn.text = if (membersExpanded) "⬆ تصغير القائمة"
+                else "⬇ عرض الأعضاء (${minOf(ordered.size, LIST_MAX)})"
+        } else listMoreBtn.visibility = View.GONE
+        val wantH = if (membersExpanded) dp(320) else WRAP
+        if (listScroll.layoutParams.height != wantH) listScroll.layoutParams = lp(MATCH, wantH, 0f, 0, 0, 0, 0)
     }
 
     private fun refresh(forceNow: Boolean = false) {
@@ -726,6 +825,7 @@ class MainActivity : Activity() {
             allianceMap.invalidate()
             rebuildAllianceChips()
             updateMapInfo()
+            if (showFree) recomputeFree()
         }
         coverTv.text = "حزم الخريطة: ${st.mapFrames} • نوافذ القلاع: ${st.popupFrames}\n" +
             "تغطية الخريطة: ${st.covered}/${st.blocks} • قلاع تحتاج فحص: ${st.due}"
@@ -787,7 +887,8 @@ class MainActivity : Activity() {
     }
 
     companion object {
-        const val LIMIT_SMALL = 29
+        const val LIMIT_SMALL = 15
+        private const val LIST_COMPACT = 8
         const val LIMIT_BIG = 100
         private const val LIST_MAX = 100
         private const val REQ_EXPORT = 42

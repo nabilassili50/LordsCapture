@@ -40,6 +40,48 @@ object ScanPlanner {
         castleTapped[key(x, y)] = now
     }
 
+    /** The bot reports it has looked at this spot, even if no castle was there (empty blocks never get marked otherwise). */
+    @Synchronized
+    fun markVisited(x: Int, y: Int, now: Long = System.currentTimeMillis()) {
+        if (!valid(x, y)) return
+        blockSeen[blockIdx(x, y)] = now
+    }
+
+    /**
+     * Next map spot for the scanning bot: the oldest block that is not fresher than [revisitMs].
+     * Once castles are known only blocks around them are cycled (so movement is caught fast);
+     * with nothing known yet the whole map is swept row by row.
+     */
+    @Synchronized
+    fun nextTarget(revisitMs: Long = 60_000L, now: Long = System.currentTimeMillis()): Target? {
+        val active = java.util.TreeSet<Int>()
+        for (k in castleSeen.keys) {
+            val bx = (k / 2048) / BLOCK
+            val by = (k % 2048) / BLOCK
+            for (dx in -1..1) for (dy in -1..1) {
+                val xx = bx + dx; val yy = by + dy
+                if (xx in 0 until BX && yy in 0 until BY) active.add(yy * BX + xx)
+            }
+        }
+        var best = -1
+        var bt = Long.MAX_VALUE
+        if (active.isEmpty()) {
+            for (i in blockSeen.indices) {
+                val t = blockSeen[i]
+                if (now - t >= revisitMs && t < bt) { bt = t; best = i }
+            }
+        } else {
+            for (i in active) {
+                val t = blockSeen[i]
+                if (now - t >= revisitMs && t < bt) { bt = t; best = i }
+            }
+        }
+        if (best < 0) return null
+        val x = minOf((best % BX) * BLOCK + BLOCK / 2, GuidCodec.MAX_X)
+        val y = minOf((best / BX) * BLOCK + BLOCK / 2, GuidCodec.MAX_Y)
+        return Target(x, y, if (bt == 0L) "never" else "stale ${(now - bt) / 1000}s")
+    }
+
     /** A castle left this spot (relocation): stop asking to re-tap it. */
     @Synchronized
     fun forget(x: Int, y: Int) {

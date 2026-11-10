@@ -18,6 +18,7 @@ import android.view.ViewConfiguration
 class AllianceMapView(ctx: Context) : View(ctx) {
     var points: List<Store.Pt> = emptyList()
     var forts: List<Store.Pt> = emptyList()
+    var freeSpots: List<Store.Pt> = emptyList()
     var selected: String? = null
     var highlight: Store.Pt? = null
     var onSelect: ((String?) -> Unit)? = null
@@ -208,6 +209,20 @@ class AllianceMapView(ctx: Context) : View(ctx) {
             canvas.drawText("($mx,$my)", lx, ly - 8f * d, txt)
             val tw = txt.measureText(title)
             labelHits.add(RectF(lx - tw / 2 - 8f * d, ly - 36f * d, lx + tw / 2 + 8f * d, ly - 4f * d) to tag)
+        }
+
+        // empty spots: green dashed square + index number
+        if (freeSpots.isNotEmpty()) {
+            val fr = Paint().apply {
+                isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 2f * d
+                color = Color.parseColor("#35C37D"); pathEffect = android.graphics.DashPathEffect(floatArrayOf(5f * d, 3f * d), 0f)
+            }
+            val ft = Paint().apply { isAntiAlias = true; textAlign = Paint.Align.CENTER; textSize = 10f * d; color = Color.parseColor("#35C37D") }
+            for ((i, f) in freeSpots.withIndex()) {
+                val fx = px(f.x); val fy = py(f.y); val q = 7f * d
+                canvas.drawRect(fx - q, fy - q, fx + q, fy + q, fr)
+                canvas.drawText((i + 1).toString(), fx, fy - q - 3f * d, ft)
+            }
         }
 
         highlight?.let { hp ->

@@ -15,6 +15,7 @@ class CaptureService : Service() {
     @Volatile private var conn: PcapConnection? = null
     private var worker: Thread? = null
     private var monitor: Thread? = null
+    private val scanServer = ScanServer()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -48,6 +49,7 @@ class CaptureService : Service() {
     private fun startCapture(prefix: String, serverPort: Int, pdPort: Int) {
         if (worker != null) return
         runFlag = true
+        scanServer.start()
         worker = Thread {
             var fails = 0
             while (runFlag) {
@@ -141,6 +143,7 @@ class CaptureService : Service() {
 
     private fun stopCapture() {
         runFlag = false
+        scanServer.stop()
         conn?.close()
         worker?.interrupt()
         worker = null
