@@ -481,6 +481,17 @@ class MainActivity : Activity() {
 
         // tools card
         val tools = card("الأدوات والتصدير")
+        val dumpIdsEt = field("أرقام الحزم فقط، فارغ = الكل (مثال: 1110,1114)", prefs.getString("dump_ids", "") ?: "", false)
+        Store.dumpIds = Store.parseDumpIds(dumpIdsEt.text.toString())
+        dumpIdsEt.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                Store.dumpIds = Store.parseDumpIds(s?.toString() ?: "")
+                prefs.edit().putString("dump_ids", s?.toString() ?: "").apply()
+            }
+        })
+        tools.addView(dumpIdsEt)
         val dumpBtn = pill("🔍 تفريغ الحزم: متوقف", cTile, cText) {}
         dumpBtn.setOnClickListener {
             Store.dumpOn = !Store.dumpOn

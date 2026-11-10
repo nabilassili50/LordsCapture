@@ -34,6 +34,16 @@ object Store {
     @Volatile var status: String = "متوقف"
     @Volatile var frames: Long = 0
     @Volatile var dumpOn: Boolean = false
+    /** Message ids to dump; empty = every packet. Set from the tools card (e.g. "1110,1114"). */
+    @Volatile var dumpIds: Set<Int> = emptySet()
+
+    fun parseDumpIds(text: String): Set<Int> =
+        text.split(',', ' ', ';', '،', '\n').mapNotNull { it.trim().toIntOrNull() }.toSet()
+
+    fun dumpWanted(payload: ByteArray): Boolean {
+        val ids = dumpIds
+        return ids.isEmpty() || PacketNames.idOf(payload) in ids
+    }
     @Volatile var reportTotal: Int = 0       // number of rows in the last report (before the display limit)
     @Volatile var reportKeys: Map<Int, String> = emptyMap()   // report line index -> player name (tappable rows)
     @Volatile var fortType: Int = -1         // object type id the user marked as "fortress" (-1 = not chosen)
@@ -84,12 +94,14 @@ object Store {
 
     @Synchronized
     fun addDump(payload: ByteArray, parsed: Int) {
-        dumps.addLast("[" + fmt.format(Date()) + "] len=" + payload.size + " id=" + PacketNames.label(PacketNames.idOf(payload)) + " parsed=" + parsed + "\n" + PacketDump.hex(payload))
+        dumps.addLast("[" + fmt.format(Date()) + "] len=" + payload.size + " id=" + PacketNames.label(PacketNames.idOf(payload)) + " parsed=" + parsed + "\n" + PacketDump.hex(payload, if (dumpIds.isEmpty()) 256 else 1024))
         while (dumps.size > 200) dumps.removeFirst()
     }
 
     @Synchronized
-    fun dumpText(): String = "== إحصاء الحزم ==\n" + opsReport(60) + "\n== التفريغ ==\n" + dumps.joinToString("\n")
+    fun dumpText(): String = "== إحصاء الحزم ==\n" + opsReport(60) +
+        "\n== التفريغ" + (if (dumpIds.isEmpty()) "" else " (أرقام: " + dumpIds.sorted().joinToString(",") + ")") + " ==\n" +
+        dumps.joinToString("\n")
 
     // ---- might history, opcode stats, persistence ----
     data class MightPoint(val at: Long, val might: Long, val kills: Long)

@@ -130,7 +130,7 @@ class CaptureService : Service() {
         val items = PacketParser.parse(payload)
         for (p in items) Store.add(p)
         Store.recordOp(payload, items.size)
-        if (Store.dumpOn) Store.addDump(payload, items.size)
+        if (Store.dumpOn && Store.dumpWanted(payload)) Store.addDump(payload, items.size)
         if (items.isNotEmpty()) Store.log("parsed ${items.size} item(s) from a ${payload.size}-byte packet")
         for (p in items) {
             if (p is CastlePopup) Store.log("castle popup ${p.x},${p.y} [${p.guildFullName}] vip=${p.vip} rank=${p.guildRank} might=${p.might} kills=${p.kills}")
