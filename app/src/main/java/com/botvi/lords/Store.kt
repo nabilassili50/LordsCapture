@@ -39,7 +39,16 @@ object Store {
 
     /** "rare" mode: dump only packets whose 3-byte opcode has been seen at most RARE_MAX times (skips chat/map spam). */
     @Volatile var dumpRare: Boolean = false
-    private const val RARE_MAX = 4
+    private const val RARE_MAX = 4          // max sightings since the dump was started
+    private const val RARE_KNOWN_SPAM = 50  // opcodes already seen this often before the dump started are skipped
+    private val dumpBase = HashMap<String, Long>()
+
+    /** Call when the dump is switched on: remembers current per-opcode counts so "rare" is measured from now. */
+    @Synchronized
+    fun startDump() {
+        dumpBase.clear()
+        for ((k, v) in ops) dumpBase[k] = v.count
+    }
 
     fun parseDumpIds(text: String): Set<Int> {
         dumpRare = text.contains("rare", ignoreCase = true) || text.contains("نادر")
@@ -52,7 +61,9 @@ object Store {
             val n = minOf(payload.size, 3)
             if (n == 0) return false
             val key = (0 until n).joinToString(" ") { String.format("%02X", payload[it].toInt() and 0xFF) }
-            return (ops[key]?.count ?: 0L) <= RARE_MAX
+            val base = dumpBase[key] ?: 0L
+            val now = ops[key]?.count ?: 0L
+            return base < RARE_KNOWN_SPAM && (now - base) <= RARE_MAX
         }
         val ids = dumpIds
         return ids.isEmpty() || PacketNames.idOf(payload) in ids

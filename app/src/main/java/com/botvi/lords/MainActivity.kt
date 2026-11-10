@@ -495,6 +495,7 @@ class MainActivity : Activity() {
         val dumpBtn = pill("🔍 تفريغ الحزم: متوقف", cTile, cText) {}
         dumpBtn.setOnClickListener {
             Store.dumpOn = !Store.dumpOn
+            if (Store.dumpOn) Store.startDump()
             dumpBtn.text = "🔍 تفريغ الحزم: " + (if (Store.dumpOn) "يعمل" else "متوقف")
         }
         tools.addView(rowOf(
