@@ -481,7 +481,7 @@ class MainActivity : Activity() {
 
         // tools card
         val tools = card("الأدوات والتصدير")
-        val dumpIdsEt = field("أرقام الحزم فقط، فارغ = الكل (مثال: 1110,1114)", prefs.getString("dump_ids", "") ?: "", false)
+        val dumpIdsEt = field("أرقام الحزم، أو rare = النادرة فقط، فارغ = الكل", prefs.getString("dump_ids", "") ?: "", false)
         Store.dumpIds = Store.parseDumpIds(dumpIdsEt.text.toString())
         dumpIdsEt.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}

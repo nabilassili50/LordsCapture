@@ -37,10 +37,23 @@ object Store {
     /** Message ids to dump; empty = every packet. Set from the tools card (e.g. "1110,1114"). */
     @Volatile var dumpIds: Set<Int> = emptySet()
 
-    fun parseDumpIds(text: String): Set<Int> =
-        text.split(',', ' ', ';', '،', '\n').mapNotNull { it.trim().toIntOrNull() }.toSet()
+    /** "rare" mode: dump only packets whose 3-byte opcode has been seen at most RARE_MAX times (skips chat/map spam). */
+    @Volatile var dumpRare: Boolean = false
+    private const val RARE_MAX = 4
 
+    fun parseDumpIds(text: String): Set<Int> {
+        dumpRare = text.contains("rare", ignoreCase = true) || text.contains("نادر")
+        return text.split(',', ' ', ';', '،', '\n').mapNotNull { it.trim().toIntOrNull() }.toSet()
+    }
+
+    @Synchronized
     fun dumpWanted(payload: ByteArray): Boolean {
+        if (dumpRare) {
+            val n = minOf(payload.size, 3)
+            if (n == 0) return false
+            val key = (0 until n).joinToString(" ") { String.format("%02X", payload[it].toInt() and 0xFF) }
+            return (ops[key]?.count ?: 0L) <= RARE_MAX
+        }
         val ids = dumpIds
         return ids.isEmpty() || PacketNames.idOf(payload) in ids
     }
@@ -94,13 +107,13 @@ object Store {
 
     @Synchronized
     fun addDump(payload: ByteArray, parsed: Int) {
-        dumps.addLast("[" + fmt.format(Date()) + "] len=" + payload.size + " id=" + PacketNames.label(PacketNames.idOf(payload)) + " parsed=" + parsed + "\n" + PacketDump.hex(payload, if (dumpIds.isEmpty()) 256 else 1024))
+        dumps.addLast("[" + fmt.format(Date()) + "] len=" + payload.size + " id=" + PacketNames.label(PacketNames.idOf(payload)) + " parsed=" + parsed + "\n" + PacketDump.hex(payload, if (dumpIds.isEmpty() && !dumpRare) 256 else 1024))
         while (dumps.size > 200) dumps.removeFirst()
     }
 
     @Synchronized
-    fun dumpText(): String = "== إحصاء الحزم ==\n" + opsReport(60) +
-        "\n== التفريغ" + (if (dumpIds.isEmpty()) "" else " (أرقام: " + dumpIds.sorted().joinToString(",") + ")") + " ==\n" +
+    fun dumpText(): String = "== إحصاء الحزم ==\n" + opsReport(400) +
+        "\n== التفريغ" + (if (dumpRare) " (نادر فقط)" else if (dumpIds.isEmpty()) "" else " (أرقام: " + dumpIds.sorted().joinToString(",") + ")") + " ==\n" +
         dumps.joinToString("\n")
 
     // ---- might history, opcode stats, persistence ----
