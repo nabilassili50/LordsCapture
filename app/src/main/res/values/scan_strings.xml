@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="scan_service_desc">يضغط على شاشة اللعبة لينتقل بين مواقع الخريطة ويلتقط الشاشة للتحقق، فقط أثناء «المسح الآلي» في Lords Capture. لا يقرأ نصوصاً ولا يرسل شيئاً خارج الجهاز.</string>
+</resources>

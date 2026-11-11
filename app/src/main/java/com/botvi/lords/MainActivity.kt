@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -43,6 +44,8 @@ class MainActivity : Activity() {
 
     private lateinit var dot: View
     private lateinit var statusTv: TextView
+    private lateinit var scanTv: TextView
+    private lateinit var scanBtn: Button
     private lateinit var extrasTv: TextView
     private lateinit var coverTv: TextView
     private lateinit var reportBox: LinearLayout
@@ -91,6 +94,10 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
         override fun run() {
+            if (::scanTv.isInitialized) {
+                scanTv.text = AutoScan.status
+                scanBtn.text = if (AutoScan.running) "■  إيقاف المسح" else "▶  بدء المسح الآلي"
+            }
             refresh()
             handler.postDelayed(this, 1000)
         }
@@ -244,6 +251,26 @@ class MainActivity : Activity() {
         statusCard.addView(coverTv)
         statusCard.addView(extrasTv)
         root.addView(statusCard)
+
+        // automatic map scan (accessibility service) — replaces the Termux "scan" command
+        val scanCard = card("🤖 المسح الآلي للخريطة")
+        scanTv = tv(AutoScan.status, 13f, cText)
+        scanCard.addView(scanTv)
+        scanBtn = pill(if (AutoScan.running) "■  إيقاف المسح" else "▶  بدء المسح الآلي", cAccent, Color.WHITE) {
+            if (AutoScan.running) {
+                AutoScan.stop()
+            } else {
+                val msg = AutoScan.start()
+                if (msg != null) {
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (_: Exception) {}
+                }
+            }
+            scanBtn.text = if (AutoScan.running) "■  إيقاف المسح" else "▶  بدء المسح الآلي"
+        }.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 6, 0, 4) }
+        scanCard.addView(scanBtn)
+        scanCard.addView(label("أول مرة: فعّل «Lords Capture — المسح الآلي» من إعدادات إمكانية الوصول (الزر يفتحها). ثم اضغط بدء وانتقل إلى اللعبة وانتظر. يحتاج الالتقاط يعمل."))
+        root.addView(scanCard)
 
         // stat tiles (3 x 2)
         val names = listOf("حزم", "لاعبون", "قلاع", "نوافذ", "هدايا", "تغيّرات")
