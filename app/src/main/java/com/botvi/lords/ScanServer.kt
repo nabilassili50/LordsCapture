@@ -65,7 +65,7 @@ class ScanServer(private val port: Int = 8765) {
                 val x = q["x"]?.toIntOrNull(); val y = q["y"]?.toIntOrNull()
                 if (x != null && y != null) { ScanPlanner.markVisited(x, y); "{\"ok\":true}" } else "{\"ok\":false}"
             }
-            "/status" -> "{\"covered\":${ScanPlanner.coveredBlocks()},\"blocks\":${ScanPlanner.totalBlocks()},\"due\":${ScanPlanner.dueCount()},\"castles\":${Store.stats().castles}}"
+            "/status" -> "{\"covered\":${ScanPlanner.coveredBlocks()},\"blocks\":${ScanPlanner.totalBlocks()},\"due\":${ScanPlanner.dueCount()},\"castles\":${Store.stats().castles},\"mapFrames\":${Store.stats().mapFrames}}"
             else -> "{\"ok\":false}"
         }
         val bytes = body.toByteArray(Charsets.UTF_8)
