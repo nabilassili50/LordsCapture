@@ -201,6 +201,7 @@ object AutoScan {
         status = "يبدأ…"
         th = Thread {
             try { loop() } catch (e: Throwable) { Store.log("المسح الآلي: ${e.javaClass.simpleName} ${e.message}") }
+            Store.log("المسح الآلي: انتهى — آخر حالة: $status")
             running = false
             status = "متوقف"
         }.also { it.isDaemon = true; it.start() }
@@ -220,6 +221,7 @@ object AutoScan {
         var bad = 0
         var mprev = Store.stats().mapFrames
         var seen = false
+        var known = false   // after a successful jump we are certainly on the map: colour checks are unreliable over sea/mountains
         while (running) {
             val svc = ScanAccessibilityService.inst
             if (svc == null) { status = "الخدمة غير مفعّلة"; return }
@@ -228,11 +230,11 @@ object AutoScan {
             if (s0 == null) { status = "تعذّر التقاط الشاشة"; sleep(700); continue }
             if (!s0.landscape) { status = "الشاشة عمودية — يلزم الوضع الأفقي"; sleep(1000); continue }
             if (dialogOpen(s0) || keypadOpen(s0)) { recover(svc); continue }
-            if (!isMap(s0)) {
-                if (isCity(s0)) { svc.tap(1195, 745); sleep(3500) }
-                else if (++bad > 8) { status = "تعذّر الوصول إلى الخريطة"; return }
-                else sleep(1000)
-                continue
+            if (!known) {
+                if (isMap(s0)) known = true
+                else if (isCity(s0)) { svc.tap(1195, 745); sleep(3500); continue }
+                else if (++bad > 3) known = true   // colour unclear (sea/mountains): assume map, a failed jump will re-check
+                else { sleep(1000); continue }
             }
             val t = ScanPlanner.nextTarget()
             if (t == null) { status = "لا أهداف مستحقة الآن — ننتظر"; sleep(4000); continue }
@@ -242,6 +244,7 @@ object AutoScan {
             val t0 = System.currentTimeMillis()
             if (jump(svc, jx, jy)) {
                 bad = 0
+                known = true
                 // packets arrive asynchronously (and the game does not re-send blocks it already cached), so wait a bit
                 var m = Store.stats().mapFrames
                 var w = 0
@@ -259,6 +262,7 @@ object AutoScan {
                 slow = 1.0
                 status = "يعمل — X:$jx Y:$jy (${visited} موقع، ${(System.currentTimeMillis() - t0) / 1000.0} ث)"
             } else {
+                known = false
                 slow = 1.8
                 val n = (fails[key] ?: 0) + 1
                 fails[key] = n
@@ -301,7 +305,6 @@ object AutoScan {
         s = svc.shot() ?: return false
         if (dialogOpen(s)) { sleep(d(800)); s = svc.shot() ?: return false }
         if (dialogOpen(s) || keypadOpen(s)) { Store.log("المسح الآلي: لم تُغلق نافذة البحث عند X=$x Y=$y"); return false }
-        if (!isMap(s)) { recover(svc); s = svc.shot() ?: return false; if (!isMap(s)) { Store.log("المسح الآلي: لم تظهر الخريطة بعد الانتقال"); return false } }
         return true
     }
 
