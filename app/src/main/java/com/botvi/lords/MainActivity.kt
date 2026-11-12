@@ -643,11 +643,48 @@ class MainActivity : Activity() {
         logCard.addView(logTv)
         root.addView(logCard)
 
-        scroll = ScrollView(this).apply {
-            setBackgroundColor(cBg)
-            addView(root)
+        // wide screen (tablet / landscape): desktop-style two panes — controls on the right, the display (map + reports) on the left
+        val wide = resources.configuration.screenWidthDp > resources.configuration.screenHeightDp &&
+            resources.configuration.screenWidthDp >= 560
+        if (wide) {
+            val kids = (0 until root.childCount).map { root.getChildAt(it) }
+            root.removeAllViews()
+            val left = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
+                setPadding(dp(8), dp(10), dp(8), dp(24))
+            }
+            val right = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
+                setPadding(dp(10), dp(10), dp(8), dp(24))
+            }
+            for (v in kids) { if (v === mapCard || v === rep) left.addView(v) else right.addView(v) }
+            // let the map use most of the screen height
+            allianceMap.layoutParams = lp(MATCH, (resources.displayMetrics.heightPixels * 0.62f).toInt(), 0f, 0, 0, 0, 0)
+            scroll = ScrollView(this).apply {
+                setBackgroundColor(cBg)
+                addView(left)
+            }
+            val rightScroll = ScrollView(this).apply {
+                setBackgroundColor(cBg)
+                addView(right)
+            }
+            val split = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
+                setBackgroundColor(cBg)
+                addView(rightScroll, LinearLayout.LayoutParams(0, MATCH, 0.36f))
+                addView(scroll, LinearLayout.LayoutParams(0, MATCH, 0.64f))
+            }
+            setContentView(split)
+        } else {
+            scroll = ScrollView(this).apply {
+                setBackgroundColor(cBg)
+                addView(root)
+            }
+            setContentView(scroll)
         }
-        setContentView(scroll)
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
