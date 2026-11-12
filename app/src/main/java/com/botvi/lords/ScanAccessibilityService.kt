@@ -180,7 +180,8 @@ object AutoScan {
 
     private const val MAX_X = 508
     private const val MAX_Y = 1020
-    private const val QUIET_MAX = 5
+    private const val QUIET_DEAD = 8      // no map packet at all since the scan started -> capture is not live
+    private const val QUIET_MAX = 40      // many consecutive silent jumps even though packets arrived before
 
     private val KEYS = mapOf(
         '1' to intArrayOf(192, 330), '2' to intArrayOf(289, 330), '3' to intArrayOf(387, 330),
@@ -218,6 +219,7 @@ object AutoScan {
         var quiet = 0
         var bad = 0
         var mprev = Store.stats().mapFrames
+        var seen = false
         while (running) {
             val svc = ScanAccessibilityService.inst
             if (svc == null) { status = "الخدمة غير مفعّلة"; return }
@@ -240,12 +242,15 @@ object AutoScan {
             val t0 = System.currentTimeMillis()
             if (jump(svc, jx, jy)) {
                 bad = 0
-                val m = Store.stats().mapFrames
-                quiet = if (m <= mprev) quiet + 1 else 0
+                // packets arrive asynchronously (and the game does not re-send blocks it already cached), so wait a bit
+                var m = Store.stats().mapFrames
+                var w = 0
+                while (m <= mprev && w < 6 && running) { sleep(500); w++; m = Store.stats().mapFrames }
+                if (m > mprev) { quiet = 0; seen = true } else quiet++
                 mprev = m
-                if (quiet >= QUIET_MAX) {
+                if ((!seen && quiet >= QUIET_DEAD) || quiet >= QUIET_MAX) {
                     status = "الالتقاط غير حيّ — تحقق من PCAPdroid (لم تصل حزم خريطة)"
-                    Store.log("المسح الآلي: توقف — لا حزم خريطة بعد $QUIET_MAX انتقالات")
+                    Store.log("المسح الآلي: توقف — لا حزم خريطة بعد $quiet انتقالات متتالية")
                     return
                 }
                 ScanPlanner.markVisited(t.x, t.y)
