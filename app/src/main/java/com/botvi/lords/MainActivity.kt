@@ -231,9 +231,9 @@ class MainActivity : Activity() {
         }
 
         // header
-        title = "Lords Capture v1 • update34"
+        title = "Lords Capture v1 • update35"
         root.addView(tv("Lords Capture", 24f, Color.WHITE, true))
-        root.addView(tv("الإصدار: update34", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
+        root.addView(tv("الإصدار: update35", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
         root.addView(tv("التقاط سلبي لبيانات اللعبة — لا يعدّل ولا يرسل شيئاً للعبة", 12f, cMuted).apply {
             setPadding(0, dp(2), 0, dp(12))
         })

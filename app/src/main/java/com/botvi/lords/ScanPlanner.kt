@@ -47,39 +47,77 @@ object ScanPlanner {
         blockSeen[blockIdx(x, y)] = now
     }
 
+    private var lastX = GuidCodec.MAX_X / 2          // where the previous target was: exploration continues from there
+    private var lastY = GuidCodec.MAX_Y / 2
+    private const val FRONTIER = 4                    // blocks around a known castle that get explored first
+
     /**
-     * Next map spot for the scanning bot: the oldest block that is not fresher than [revisitMs].
-     * Once castles are known only blocks around them are cycled (so movement is caught fast);
-     * with nothing known yet the whole map is swept row by row.
+     * Next map spot for the scanning bot, in this order:
+     *  1) never-visited blocks within FRONTIER blocks of a known castle (the castle cluster grows outwards),
+     *  2) the oldest block around a known castle (+-1) that is not fresher than [revisitMs] (catches relocations),
+     *  3) any never-visited block, nearest to the previous target (slow sweep, so empty areas still get explored).
+     * Before this, one known castle (usually your own) locked the scan onto 9 blocks around it forever.
      */
     @Synchronized
     fun nextTarget(revisitMs: Long = 60_000L, now: Long = System.currentTimeMillis()): Target? {
         val active = java.util.TreeSet<Int>()
+        val cbx = ArrayList<Int>()
+        val cby = ArrayList<Int>()
+        val dup = HashSet<Int>()
         for (k in castleSeen.keys) {
             val bx = (k / 2048) / BLOCK
             val by = (k % 2048) / BLOCK
+            if (bx !in 0 until BX || by !in 0 until BY) continue
+            if (dup.add(by * BX + bx)) { cbx.add(bx); cby.add(by) }
             for (dx in -1..1) for (dy in -1..1) {
                 val xx = bx + dx; val yy = by + dy
                 if (xx in 0 until BX && yy in 0 until BY) active.add(yy * BX + xx)
             }
         }
+        fun dist(i: Int) = Math.abs((i % BX) * BLOCK + BLOCK / 2 - lastX) + Math.abs((i / BX) * BLOCK + BLOCK / 2 - lastY)
+
         var best = -1
-        var bt = Long.MAX_VALUE
-        if (active.isEmpty()) {
-            for (i in blockSeen.indices) {
-                val t = blockSeen[i]
-                if (now - t >= revisitMs && t < bt) { bt = t; best = i }
+        var note = ""
+        // 1) frontier around known castles
+        var bd = Int.MAX_VALUE
+        var bl = Int.MAX_VALUE
+        for (n in cbx.indices) {
+            for (dx in -FRONTIER..FRONTIER) for (dy in -FRONTIER..FRONTIER) {
+                val xx = cbx[n] + dx; val yy = cby[n] + dy
+                if (xx !in 0 until BX || yy !in 0 until BY) continue
+                val i = yy * BX + xx
+                if (blockSeen[i] != 0L) continue
+                val d = maxOf(Math.abs(dx), Math.abs(dy))
+                val dl = dist(i)
+                if (d < bd || (d == bd && dl < bl)) { bd = d; bl = dl; best = i }
             }
-        } else {
+        }
+        if (best >= 0) note = "frontier"
+        // 2) stale blocks around castles
+        if (best < 0) {
+            var bt = Long.MAX_VALUE
             for (i in active) {
                 val t = blockSeen[i]
                 if (now - t >= revisitMs && t < bt) { bt = t; best = i }
             }
+            if (best >= 0) note = if (bt == 0L) "never" else "stale ${(now - bt) / 1000}s"
+        }
+        // 3) global sweep of never-visited blocks, nearest first
+        if (best < 0) {
+            var bdl = Int.MAX_VALUE
+            for (i in blockSeen.indices) {
+                if (blockSeen[i] != 0L) continue
+                val dl = dist(i)
+                if (dl < bdl) { bdl = dl; best = i }
+            }
+            if (best >= 0) note = "sweep"
         }
         if (best < 0) return null
         val x = minOf((best % BX) * BLOCK + BLOCK / 2, GuidCodec.MAX_X)
         val y = minOf((best / BX) * BLOCK + BLOCK / 2, GuidCodec.MAX_Y)
-        return Target(x, y, if (bt == 0L) "never" else "stale ${(now - bt) / 1000}s")
+        lastX = x
+        lastY = y
+        return Target(x, y, note)
     }
 
     /** A castle left this spot (relocation): stop asking to re-tap it. */
@@ -152,5 +190,7 @@ object ScanPlanner {
         blockSeen.fill(0L)
         castleSeen.clear()
         castleTapped.clear()
+        lastX = GuidCodec.MAX_X / 2
+        lastY = GuidCodec.MAX_Y / 2
     }
 }
