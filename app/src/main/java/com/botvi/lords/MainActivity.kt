@@ -231,9 +231,9 @@ class MainActivity : Activity() {
         }
 
         // header
-        title = "Lords Capture v1 • update32"
+        title = "Lords Capture v1 • update33"
         root.addView(tv("Lords Capture", 24f, Color.WHITE, true))
-        root.addView(tv("الإصدار: update32", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
+        root.addView(tv("الإصدار: update33", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
         root.addView(tv("التقاط سلبي لبيانات اللعبة — لا يعدّل ولا يرسل شيئاً للعبة", 12f, cMuted).apply {
             setPadding(0, dp(2), 0, dp(12))
         })
@@ -271,6 +271,16 @@ class MainActivity : Activity() {
             scanBtn.text = if (AutoScan.running) "■  إيقاف المسح" else "▶  بدء المسح الآلي"
         }.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 6, 0, 4) }
         scanCard.addView(scanBtn)
+        AutoScan.stopOnWatch = prefs.getBoolean("stop_on_watch", true)
+        val wsBtn = pill("", cTile, cText) {}.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) }
+        fun wsText() { wsBtn.text = "👁 التوقف عند إيجاد لاعب مراقَب: " + (if (AutoScan.stopOnWatch) "مفعّل" else "معطّل") }
+        wsText()
+        wsBtn.setOnClickListener {
+            AutoScan.stopOnWatch = !AutoScan.stopOnWatch
+            prefs.edit().putBoolean("stop_on_watch", AutoScan.stopOnWatch).apply()
+            wsText()
+        }
+        scanCard.addView(wsBtn)
         scanCard.addView(label("أول مرة: فعّل «Lords Capture — المسح الآلي» من إعدادات إمكانية الوصول (الزر يفتحها). ثم اضغط بدء وانتقل إلى اللعبة وانتظر. يحتاج الالتقاط يعمل."))
         root.addView(scanCard)
 

@@ -174,6 +174,8 @@ private fun isCity(s: Shot): Boolean { val a = s.avg(1140, 720, 1255, 775); retu
 object AutoScan {
     @Volatile var running = false
     @Volatile var status = "متوقف"
+    @Volatile var stopOnWatch = true
+    private var ackXY = -1
     private var th: Thread? = null
     @Volatile private var slow = 1.0
     private val fails = HashMap<Int, Int>()
@@ -203,7 +205,8 @@ object AutoScan {
             try { loop() } catch (e: Throwable) { Store.log("المسح الآلي: ${e.javaClass.simpleName} ${e.message}") }
             Store.log("المسح الآلي: انتهى — آخر حالة: $status")
             running = false
-            status = "متوقف"
+            val last = status
+            status = if (last == "متوقف" || last.startsWith("وجدت")) last else "متوقف — $last"
         }.also { it.isDaemon = true; it.start() }
         return null
     }
@@ -221,10 +224,12 @@ object AutoScan {
         var bad = 0
         var mprev = Store.stats().mapFrames
         var seen = false
+        val startMs = System.currentTimeMillis()
         var known = false   // after a successful jump we are certainly on the map: colour checks are unreliable over sea/mountains
         while (running) {
             val svc = ScanAccessibilityService.inst
             if (svc == null) { status = "الخدمة غير مفعّلة"; return }
+            if (checkWatch(svc, startMs)) return
             if (!svc.inGame()) { status = "في انتظار ظهور اللعبة في المقدمة…"; sleep(800); continue }
             val s0 = svc.shot()
             if (s0 == null) { status = "تعذّر التقاط الشاشة"; sleep(700); continue }
@@ -238,8 +243,9 @@ object AutoScan {
             }
             val t = ScanPlanner.nextTarget()
             if (t == null) { status = "لا أهداف مستحقة الآن — ننتظر"; sleep(4000); continue }
-            val jx = minOf(t.x, MAX_X)
-            val jy = minOf(t.y, MAX_Y)
+            // at least 2 digits: single-digit coordinates (e.g. Y=8 on the first row) fail in the game's number pad
+            val jx = maxOf(10, minOf(t.x, MAX_X))
+            val jy = maxOf(10, minOf(t.y, MAX_Y))
             val key = t.x * 2048 + t.y
             val t0 = System.currentTimeMillis()
             if (jump(svc, jx, jy)) {
@@ -256,6 +262,8 @@ object AutoScan {
                     Store.log("المسح الآلي: توقف — لا حزم خريطة بعد $quiet انتقالات متتالية")
                     return
                 }
+                sleep(300)
+                if (checkWatch(svc, startMs)) return
                 ScanPlanner.markVisited(t.x, t.y)
                 fails.remove(key)
                 visited++
@@ -272,9 +280,23 @@ object AutoScan {
                     ScanPlanner.markVisited(t.x, t.y)
                     fails.remove(key)
                 }
-                if (++bad > 8) { status = "فشل متكرر — أوقفت المسح، راجع السجل"; return }
+                if (++bad > 20) { status = "فشل متكرر — أوقفت المسح، راجع السجل"; return }
             }
         }
+    }
+
+    /** a watched player's castle was just captured: centre the view on it and stop */
+    private fun checkWatch(svc: ScanAccessibilityService, startMs: Long): Boolean {
+        if (!stopOnWatch) return false
+        val h = Store.watchHit ?: return false
+        if (h.atMs < startMs) return false
+        val k = h.x * 2048 + h.y
+        if (k == ackXY) return false   // already stopped at this castle; continue after the user restarts
+        ackXY = k
+        status = "وجدت ${h.name} عند X:${h.x} Y:${h.y} K${h.realm}"
+        Store.log("المسح الآلي: $status — توقفت هناك")
+        try { jump(svc, maxOf(10, minOf(h.x, MAX_X)), maxOf(10, minOf(h.y, MAX_Y))) } catch (_: Throwable) {}
+        return true
     }
 
     private fun jump(svc: ScanAccessibilityService, x: Int, y: Int): Boolean {

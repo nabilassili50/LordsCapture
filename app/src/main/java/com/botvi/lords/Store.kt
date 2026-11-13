@@ -32,6 +32,9 @@ object Store {
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     @Volatile var status: String = "متوقف"
+    /** last time a watched player's castle was seen on the map (the auto scan stops on it) */
+    class WatchHit(val name: String, val x: Int, val y: Int, val realm: Int, val guild: String, val atMs: Long)
+    @Volatile var watchHit: WatchHit? = null
     @Volatile var frames: Long = 0
     @Volatile var dumpOn: Boolean = false
     /** Message ids to dump; empty = every packet. Set from the tools card (e.g. "1110,1114"). */
@@ -784,6 +787,7 @@ object Store {
     private fun onWatchedSeen(p: MapPlayer, from: MapPlayer?, now: Long) {
         val wk = wkey(p.name)
         if (!watch.containsKey(wk)) return
+        watchHit = WatchHit(p.name, p.x, p.y, p.realm, p.guild, System.currentTimeMillis())
         val last = watchSeen[wk]
         if (from != null) {
             watchAlert("👁🚚 " + p.name + " انتقل: (" + from.x + "," + from.y + ") ← (" + p.x + "," + p.y + ") K" + p.realm)
