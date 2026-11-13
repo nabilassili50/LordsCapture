@@ -183,8 +183,8 @@ object AutoScan {
     private const val MIN_C = 24   // the map edge rows/columns (0..23) were rejected by the game's number pad / dialog
     private const val MAX_X = 508
     private const val MAX_Y = 1020
-    private const val QUIET_DEAD = 8      // no map packet at all since the scan started -> capture is not live
-    private const val QUIET_MAX = 40      // many consecutive silent jumps even though packets arrived before
+    private const val QUIET_DEAD = 8      // consecutive jumps with NO game packet at all -> the capture is dead
+    private const val QUIET_MAX = 150     // consecutive jumps without a new map packet (area already cached by the game)
 
     private val KEYS = mapOf(
         '1' to intArrayOf(192, 330), '2' to intArrayOf(289, 330), '3' to intArrayOf(387, 330),
@@ -224,7 +224,8 @@ object AutoScan {
         var quiet = 0
         var bad = 0
         var mprev = Store.stats().mapFrames
-        var seen = false
+        var fprev = Store.frames   // any game frame (chat, etc.) proves the capture is alive
+        var dead = 0
         val startMs = System.currentTimeMillis()
         var known = false   // after a successful jump we are certainly on the map: colour checks are unreliable over sea/mountains
         while (running) {
@@ -256,11 +257,19 @@ object AutoScan {
                 var m = Store.stats().mapFrames
                 var w = 0
                 while (m <= mprev && w < 6 && running) { sleep(500); w++; m = Store.stats().mapFrames }
-                if (m > mprev) { quiet = 0; seen = true } else quiet++
+                if (m > mprev) quiet = 0 else quiet++
                 mprev = m
-                if ((!seen && quiet >= QUIET_DEAD) || quiet >= QUIET_MAX) {
-                    status = "الالتقاط غير حيّ — تحقق من PCAPdroid (لم تصل حزم خريطة)"
-                    Store.log("المسح الآلي: توقف — لا حزم خريطة بعد $quiet انتقالات متتالية")
+                val fr = Store.frames
+                if (fr > fprev) dead = 0 else dead++
+                fprev = fr
+                if (dead >= QUIET_DEAD) {
+                    status = "الالتقاط غير حيّ — لا تصل أي حزمة من اللعبة (تحقق من PCAPdroid)"
+                    Store.log("المسح الآلي: توقف — لا حزم إطلاقاً بعد $dead انتقالات متتالية")
+                    return
+                }
+                if (quiet >= QUIET_MAX) {
+                    status = "لا حزم خريطة جديدة منذ $quiet انتقالاً"
+                    Store.log("المسح الآلي: توقف — لا حزم خريطة جديدة منذ $quiet انتقالاً")
                     return
                 }
                 sleep(300)
@@ -269,7 +278,8 @@ object AutoScan {
                 fails.remove(key)
                 visited++
                 slow = 1.0
-                status = "يعمل — X:$jx Y:$jy (${visited} موقع، ${(System.currentTimeMillis() - t0) / 1000.0} ث)"
+                status = "يعمل — X:$jx Y:$jy (${visited} موقع، ${(System.currentTimeMillis() - t0) / 1000.0} ث)" +
+                    (if (quiet >= 3) " • بلا حزم خريطة جديدة ($quiet) — منطقة محمّلة سابقاً في اللعبة، نبتعد عنها" else "")
             } else {
                 known = false
                 slow = 1.8
