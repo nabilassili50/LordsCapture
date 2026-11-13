@@ -180,6 +180,7 @@ object AutoScan {
     @Volatile private var slow = 1.0
     private val fails = HashMap<Int, Int>()
 
+    private const val MIN_C = 24   // the map edge rows/columns (0..23) were rejected by the game's number pad / dialog
     private const val MAX_X = 508
     private const val MAX_Y = 1020
     private const val QUIET_DEAD = 8      // no map packet at all since the scan started -> capture is not live
@@ -244,8 +245,8 @@ object AutoScan {
             val t = ScanPlanner.nextTarget()
             if (t == null) { status = "لا أهداف مستحقة الآن — ننتظر"; sleep(4000); continue }
             // at least 2 digits: single-digit coordinates (e.g. Y=8 on the first row) fail in the game's number pad
-            val jx = maxOf(10, minOf(t.x, MAX_X))
-            val jy = maxOf(10, minOf(t.y, MAX_Y))
+            val jx = maxOf(MIN_C, minOf(t.x, MAX_X))
+            val jy = maxOf(MIN_C, minOf(t.y, MAX_Y))
             val key = t.x * 2048 + t.y
             val t0 = System.currentTimeMillis()
             if (jump(svc, jx, jy)) {
@@ -295,7 +296,7 @@ object AutoScan {
         ackXY = k
         status = "وجدت ${h.name} عند X:${h.x} Y:${h.y} K${h.realm}"
         Store.log("المسح الآلي: $status — توقفت هناك")
-        try { jump(svc, maxOf(10, minOf(h.x, MAX_X)), maxOf(10, minOf(h.y, MAX_Y))) } catch (_: Throwable) {}
+        try { jump(svc, maxOf(MIN_C, minOf(h.x, MAX_X)), maxOf(MIN_C, minOf(h.y, MAX_Y))) } catch (_: Throwable) {}
         return true
     }
 
