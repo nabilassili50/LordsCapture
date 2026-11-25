@@ -174,17 +174,14 @@ private fun isCity(s: Shot): Boolean { val a = s.avg(1140, 720, 1255, 775); retu
 object AutoScan {
     @Volatile var running = false
     @Volatile var status = "متوقف"
-    @Volatile var stopOnWatch = true
-    private var ackXY = -1
     private var th: Thread? = null
     @Volatile private var slow = 1.0
     private val fails = HashMap<Int, Int>()
 
-    private const val MIN_C = 24   // the map edge rows/columns (0..23) were rejected by the game's number pad / dialog
     private const val MAX_X = 508
     private const val MAX_Y = 1020
-    private const val QUIET_DEAD = 8      // consecutive jumps with NO game packet at all -> the capture is dead
-    private const val QUIET_MAX = 150     // consecutive jumps without a new map packet (area already cached by the game)
+    private const val QUIET_DEAD = 8      // no map packet at all since the scan started -> capture is not live
+    private const val QUIET_MAX = 40      // many consecutive silent jumps even though packets arrived before
 
     private val KEYS = mapOf(
         '1' to intArrayOf(192, 330), '2' to intArrayOf(289, 330), '3' to intArrayOf(387, 330),
@@ -204,10 +201,8 @@ object AutoScan {
         status = "يبدأ…"
         th = Thread {
             try { loop() } catch (e: Throwable) { Store.log("المسح الآلي: ${e.javaClass.simpleName} ${e.message}") }
-            Store.log("المسح الآلي: انتهى — آخر حالة: $status")
             running = false
-            val last = status
-            status = if (last == "متوقف" || last.startsWith("وجدت")) last else "متوقف — $last"
+            status = "متوقف"
         }.also { it.isDaemon = true; it.start() }
         return null
     }
@@ -224,64 +219,46 @@ object AutoScan {
         var quiet = 0
         var bad = 0
         var mprev = Store.stats().mapFrames
-        var fprev = Store.frames   // any game frame (chat, etc.) proves the capture is alive
-        var dead = 0
-        val startMs = System.currentTimeMillis()
-        var known = false   // after a successful jump we are certainly on the map: colour checks are unreliable over sea/mountains
+        var seen = false
         while (running) {
             val svc = ScanAccessibilityService.inst
             if (svc == null) { status = "الخدمة غير مفعّلة"; return }
-            if (checkWatch(svc, startMs)) return
             if (!svc.inGame()) { status = "في انتظار ظهور اللعبة في المقدمة…"; sleep(800); continue }
             val s0 = svc.shot()
             if (s0 == null) { status = "تعذّر التقاط الشاشة"; sleep(700); continue }
             if (!s0.landscape) { status = "الشاشة عمودية — يلزم الوضع الأفقي"; sleep(1000); continue }
             if (dialogOpen(s0) || keypadOpen(s0)) { recover(svc); continue }
-            if (!known) {
-                if (isMap(s0)) known = true
-                else if (isCity(s0)) { svc.tap(1195, 745); sleep(3500); continue }
-                else if (++bad > 3) known = true   // colour unclear (sea/mountains): assume map, a failed jump will re-check
-                else { sleep(1000); continue }
+            if (!isMap(s0)) {
+                if (isCity(s0)) { svc.tap(1195, 745); sleep(3500) }
+                else if (++bad > 8) { status = "تعذّر الوصول إلى الخريطة"; return }
+                else sleep(1000)
+                continue
             }
             val t = ScanPlanner.nextTarget()
             if (t == null) { status = "لا أهداف مستحقة الآن — ننتظر"; sleep(4000); continue }
-            // at least 2 digits: single-digit coordinates (e.g. Y=8 on the first row) fail in the game's number pad
-            val jx = maxOf(MIN_C, minOf(t.x, MAX_X))
-            val jy = maxOf(MIN_C, minOf(t.y, MAX_Y))
+            val jx = minOf(t.x, MAX_X)
+            val jy = minOf(t.y, MAX_Y)
             val key = t.x * 2048 + t.y
             val t0 = System.currentTimeMillis()
             if (jump(svc, jx, jy)) {
                 bad = 0
-                known = true
                 // packets arrive asynchronously (and the game does not re-send blocks it already cached), so wait a bit
                 var m = Store.stats().mapFrames
                 var w = 0
                 while (m <= mprev && w < 6 && running) { sleep(500); w++; m = Store.stats().mapFrames }
-                if (m > mprev) quiet = 0 else quiet++
+                if (m > mprev) { quiet = 0; seen = true } else quiet++
                 mprev = m
-                val fr = Store.frames
-                if (fr > fprev) dead = 0 else dead++
-                fprev = fr
-                if (dead >= QUIET_DEAD) {
-                    status = "الالتقاط غير حيّ — لا تصل أي حزمة من اللعبة (تحقق من PCAPdroid)"
-                    Store.log("المسح الآلي: توقف — لا حزم إطلاقاً بعد $dead انتقالات متتالية")
+                if ((!seen && quiet >= QUIET_DEAD) || quiet >= QUIET_MAX) {
+                    status = "الالتقاط غير حيّ — تحقق من PCAPdroid (لم تصل حزم خريطة)"
+                    Store.log("المسح الآلي: توقف — لا حزم خريطة بعد $quiet انتقالات متتالية")
                     return
                 }
-                if (quiet >= QUIET_MAX) {
-                    status = "لا حزم خريطة جديدة منذ $quiet انتقالاً"
-                    Store.log("المسح الآلي: توقف — لا حزم خريطة جديدة منذ $quiet انتقالاً")
-                    return
-                }
-                sleep(300)
-                if (checkWatch(svc, startMs)) return
                 ScanPlanner.markVisited(t.x, t.y)
                 fails.remove(key)
                 visited++
                 slow = 1.0
-                status = "يعمل — X:$jx Y:$jy (${visited} موقع، ${(System.currentTimeMillis() - t0) / 1000.0} ث)" +
-                    (if (quiet >= 3) " • بلا حزم خريطة جديدة ($quiet) — منطقة محمّلة سابقاً في اللعبة، نبتعد عنها" else "")
+                status = "يعمل — X:$jx Y:$jy (${visited} موقع، ${(System.currentTimeMillis() - t0) / 1000.0} ث)"
             } else {
-                known = false
                 slow = 1.8
                 val n = (fails[key] ?: 0) + 1
                 fails[key] = n
@@ -291,23 +268,9 @@ object AutoScan {
                     ScanPlanner.markVisited(t.x, t.y)
                     fails.remove(key)
                 }
-                if (++bad > 20) { status = "فشل متكرر — أوقفت المسح، راجع السجل"; return }
+                if (++bad > 8) { status = "فشل متكرر — أوقفت المسح، راجع السجل"; return }
             }
         }
-    }
-
-    /** a watched player's castle was just captured: centre the view on it and stop */
-    private fun checkWatch(svc: ScanAccessibilityService, startMs: Long): Boolean {
-        if (!stopOnWatch) return false
-        val h = Store.watchHit ?: return false
-        if (h.atMs < startMs) return false
-        val k = h.x * 2048 + h.y
-        if (k == ackXY) return false   // already stopped at this castle; continue after the user restarts
-        ackXY = k
-        status = "وجدت ${h.name} عند X:${h.x} Y:${h.y} K${h.realm}"
-        Store.log("المسح الآلي: $status — توقفت هناك")
-        try { jump(svc, maxOf(MIN_C, minOf(h.x, MAX_X)), maxOf(MIN_C, minOf(h.y, MAX_Y))) } catch (_: Throwable) {}
-        return true
     }
 
     private fun jump(svc: ScanAccessibilityService, x: Int, y: Int): Boolean {
@@ -338,6 +301,7 @@ object AutoScan {
         s = svc.shot() ?: return false
         if (dialogOpen(s)) { sleep(d(800)); s = svc.shot() ?: return false }
         if (dialogOpen(s) || keypadOpen(s)) { Store.log("المسح الآلي: لم تُغلق نافذة البحث عند X=$x Y=$y"); return false }
+        if (!isMap(s)) { recover(svc); s = svc.shot() ?: return false; if (!isMap(s)) { Store.log("المسح الآلي: لم تظهر الخريطة بعد الانتقال"); return false } }
         return true
     }
 
