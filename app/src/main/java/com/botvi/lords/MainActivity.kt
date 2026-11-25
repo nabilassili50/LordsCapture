@@ -231,7 +231,9 @@ class MainActivity : Activity() {
         }
 
         // header
+        title = "Lords Capture v1 • update36"
         root.addView(tv("Lords Capture", 24f, Color.WHITE, true))
+        root.addView(tv("الإصدار: update36", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
         root.addView(tv("التقاط سلبي لبيانات اللعبة — لا يعدّل ولا يرسل شيئاً للعبة", 12f, cMuted).apply {
             setPadding(0, dp(2), 0, dp(12))
         })
@@ -269,6 +271,50 @@ class MainActivity : Activity() {
             scanBtn.text = if (AutoScan.running) "■  إيقاف المسح" else "▶  بدء المسح الآلي"
         }.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 6, 0, 4) }
         scanCard.addView(scanBtn)
+        AutoScan.stopOnWatch = prefs.getBoolean("stop_on_watch", true)
+        val wsBtn = pill("", cTile, cText) {}.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) }
+        fun wsText() { wsBtn.text = "👁 التوقف عند إيجاد لاعب مراقَب: " + (if (AutoScan.stopOnWatch) "مفعّل" else "معطّل") }
+        wsText()
+        wsBtn.setOnClickListener {
+            AutoScan.stopOnWatch = !AutoScan.stopOnWatch
+            prefs.edit().putBoolean("stop_on_watch", AutoScan.stopOnWatch).apply()
+            wsText()
+        }
+        scanCard.addView(wsBtn)
+        ScanPlanner.fullMap = prefs.getBoolean("scan_full", true)
+        val fmBtn = pill("", cTile, cText) {}.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) }
+        fun fmText() { fmBtn.text = "🧭 نمط الانتقال: " + (if (ScanPlanner.fullMap) "كل الخريطة بانتظام" else "حول القلاع أولاً") }
+        fmText()
+        fmBtn.setOnClickListener {
+            ScanPlanner.fullMap = !ScanPlanner.fullMap
+            prefs.edit().putBoolean("scan_full", ScanPlanner.fullMap).apply()
+            fmText()
+        }
+        scanCard.addView(fmBtn)
+        AutoScan.dragMode = prefs.getBoolean("scan_drag", true)
+        AutoScan.dragDir = if (prefs.getBoolean("drag_rev", false)) -1 else 1
+        val dmBtn = pill("", cTile, cText) {}.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) }
+        fun dmText() { dmBtn.text = "🖐 طريقة المسح: " + (if (AutoScan.dragMode) "سحب الخريطة تلقائياً" else "انتقال بالإحداثيات") }
+        dmText()
+        dmBtn.setOnClickListener {
+            AutoScan.dragMode = !AutoScan.dragMode
+            prefs.edit().putBoolean("scan_drag", AutoScan.dragMode).apply()
+            dmText()
+        }
+        scanCard.addView(dmBtn)
+        val ddBtn = pill("", cTile, cText) {}.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) }
+        fun ddText() { ddBtn.text = "↔ اتجاه السحب: " + (if (AutoScan.dragDir == 1) "عادي" else "معكوس") }
+        ddText()
+        ddBtn.setOnClickListener {
+            AutoScan.dragDir = -AutoScan.dragDir
+            prefs.edit().putBoolean("drag_rev", AutoScan.dragDir == -1).apply()
+            ddText()
+        }
+        scanCard.addView(ddBtn)
+        scanCard.addView(pill("🔄  مسح جديد لكل الخريطة من البداية", cTile, cText) {
+            ScanPlanner.newSweep()
+            Toast.makeText(this, "بدأ مسح جديد لكل الخريطة", Toast.LENGTH_SHORT).show()
+        }.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) })
         scanCard.addView(label("أول مرة: فعّل «Lords Capture — المسح الآلي» من إعدادات إمكانية الوصول (الزر يفتحها). ثم اضغط بدء وانتقل إلى اللعبة وانتظر. يحتاج الالتقاط يعمل."))
         root.addView(scanCard)
 
@@ -643,11 +689,48 @@ class MainActivity : Activity() {
         logCard.addView(logTv)
         root.addView(logCard)
 
-        scroll = ScrollView(this).apply {
-            setBackgroundColor(cBg)
-            addView(root)
+        // wide screen (tablet / landscape): desktop-style two panes — controls on the right, the display (map + reports) on the left
+        val wide = resources.configuration.screenWidthDp > resources.configuration.screenHeightDp &&
+            resources.configuration.screenWidthDp >= 560
+        if (wide) {
+            val kids = (0 until root.childCount).map { root.getChildAt(it) }
+            root.removeAllViews()
+            val left = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
+                setPadding(dp(8), dp(10), dp(8), dp(24))
+            }
+            val right = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
+                setPadding(dp(10), dp(10), dp(8), dp(24))
+            }
+            for (v in kids) { if (v === mapCard || v === rep) left.addView(v) else right.addView(v) }
+            // let the map use most of the screen height
+            allianceMap.layoutParams = lp(MATCH, (resources.displayMetrics.heightPixels * 0.62f).toInt(), 0f, 0, 0, 0, 0)
+            scroll = ScrollView(this).apply {
+                setBackgroundColor(cBg)
+                addView(left)
+            }
+            val rightScroll = ScrollView(this).apply {
+                setBackgroundColor(cBg)
+                addView(right)
+            }
+            val split = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
+                setBackgroundColor(cBg)
+                addView(rightScroll, LinearLayout.LayoutParams(0, MATCH, 0.36f))
+                addView(scroll, LinearLayout.LayoutParams(0, MATCH, 0.64f))
+            }
+            setContentView(split)
+        } else {
+            scroll = ScrollView(this).apply {
+                setBackgroundColor(cBg)
+                addView(root)
+            }
+            setContentView(scroll)
         }
-        setContentView(scroll)
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED

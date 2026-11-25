@@ -47,6 +47,79 @@ object ScanPlanner {
         blockSeen[blockIdx(x, y)] = now
     }
 
+    /** true: sweep the WHOLE map first (snake order, land or sea alike); false: explore around known castles first. */
+    @Volatile var fullMap = true
+
+    // visitable block grid: block centres 24..504 (x) and 24..1016 (y), the game's dialog rejects the outer 24 rows/columns
+    private const val C0 = 1
+    private const val C1 = 31
+    private const val R0 = 1
+    private const val R1 = 63
+    private const val NC = C1 - C0 + 1
+    private const val SWEEP_TOTAL = NC * (R1 - R0 + 1)
+    private var sweepPos = 0
+
+    private fun sweepIdx(p: Int): Int {
+        val rr = p / NC
+        val cc = p % NC
+        val c = if (rr % 2 == 0) C0 + cc else C1 - cc      // snake: left->right, then right->left
+        return (R0 + rr) * BX + c
+    }
+
+    /** next block of the sweep that has not been seen yet, or -1 when the whole map has been covered */
+    private fun sweepNextIdx(): Int {
+        while (sweepPos < SWEEP_TOTAL) {
+            val i = sweepIdx(sweepPos)
+            if (blockSeen[i] == 0L) return i
+            sweepPos++
+        }
+        return -1
+    }
+
+    /** first map row (west to east, north to south) that still has an unseen block: [centreY, centreX of its first unseen block], or null when the whole kingdom is covered */
+    @Synchronized
+    fun nextDragRow(): IntArray? {
+        for (r in R0..R1) for (c in C0..C1) {
+            if (blockSeen[r * BX + c] == 0L) return intArrayOf(r * BLOCK + BLOCK / 2, c * BLOCK + BLOCK / 2)
+        }
+        return null
+    }
+
+    /** marks every block on the row of [y] between x0 and x1 as visited (the drag scan moved the view across them) */
+    @Synchronized
+    fun markSpan(x0: Int, x1: Int, y: Int) {
+        var x = maxOf(x0, 0)
+        while (x < x1) { markVisited(x, y); x += BLOCK }
+        markVisited(x1, y)
+    }
+
+    @Synchronized
+    fun sweepText(): String {
+        var done = 0
+        for (p in 0 until SWEEP_TOTAL) if (blockSeen[sweepIdx(p)] != 0L) done++
+        return if (done >= SWEEP_TOTAL) "اكتمل مسح الخريطة ($SWEEP_TOTAL/$SWEEP_TOTAL) — نعيد فحص ما حول القلاع"
+        else "مسح كل الخريطة: $done/$SWEEP_TOTAL (${done * 100 / SWEEP_TOTAL}%)"
+    }
+
+    /** start a fresh full-map sweep (castles stay known; only the "visited" marks are cleared) */
+    @Synchronized
+    fun newSweep() {
+        blockSeen.fill(0L)
+        sweepPos = 0
+    }
+
+    @Synchronized
+    fun exportSeen(): List<Pair<Int, Long>> {
+        val out = ArrayList<Pair<Int, Long>>()
+        for (i in blockSeen.indices) if (blockSeen[i] != 0L) out.add(i to blockSeen[i])
+        return out
+    }
+
+    @Synchronized
+    fun importSeen(idx: Int, t: Long) {
+        if (idx in blockSeen.indices && blockSeen[idx] < t) blockSeen[idx] = t
+    }
+
     private var lastX = GuidCodec.MAX_X / 2          // where the previous target was: exploration continues from there
     private var lastY = GuidCodec.MAX_Y / 2
     private const val FRONTIER = 4                    // blocks around a known castle that get explored first
@@ -78,6 +151,17 @@ object ScanPlanner {
 
         var best = -1
         var note = ""
+        // 0) whole-map sweep: every visitable block exactly once, in snake order
+        if (fullMap) {
+            val si = sweepNextIdx()
+            if (si >= 0) {
+                val sx = minOf((si % BX) * BLOCK + BLOCK / 2, GuidCodec.MAX_X)
+                val sy = minOf((si / BX) * BLOCK + BLOCK / 2, GuidCodec.MAX_Y)
+                lastX = sx
+                lastY = sy
+                return Target(sx, sy, "sweep")
+            }
+        }
         // 1) frontier around known castles
         var bd = Int.MAX_VALUE
         var bl = Int.MAX_VALUE
@@ -107,6 +191,8 @@ object ScanPlanner {
             var bdl = Int.MAX_VALUE
             for (i in blockSeen.indices) {
                 if (blockSeen[i] != 0L) continue
+                // the outer rows/columns cannot be jumped to; the screen centred on their neighbours already shows them
+                if (fullMap && ((i % BX) !in C0..C1 || (i / BX) !in R0..R1)) continue
                 val dl = dist(i)
                 if (dl < bdl) { bdl = dl; best = i }
             }
@@ -192,5 +278,6 @@ object ScanPlanner {
         castleTapped.clear()
         lastX = GuidCodec.MAX_X / 2
         lastY = GuidCodec.MAX_Y / 2
+        sweepPos = 0
     }
 }
