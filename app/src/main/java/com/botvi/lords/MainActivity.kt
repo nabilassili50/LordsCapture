@@ -231,9 +231,9 @@ class MainActivity : Activity() {
         }
 
         // header
-        title = "Lords Capture v1 • update36"
+        title = "Lords Capture v1 • update37"
         root.addView(tv("Lords Capture", 24f, Color.WHITE, true))
-        root.addView(tv("الإصدار: update36", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
+        root.addView(tv("الإصدار: update37", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
         root.addView(tv("التقاط سلبي لبيانات اللعبة — لا يعدّل ولا يرسل شيئاً للعبة", 12f, cMuted).apply {
             setPadding(0, dp(2), 0, dp(12))
         })
@@ -281,40 +281,6 @@ class MainActivity : Activity() {
             wsText()
         }
         scanCard.addView(wsBtn)
-        ScanPlanner.fullMap = prefs.getBoolean("scan_full", true)
-        val fmBtn = pill("", cTile, cText) {}.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) }
-        fun fmText() { fmBtn.text = "🧭 نمط الانتقال: " + (if (ScanPlanner.fullMap) "كل الخريطة بانتظام" else "حول القلاع أولاً") }
-        fmText()
-        fmBtn.setOnClickListener {
-            ScanPlanner.fullMap = !ScanPlanner.fullMap
-            prefs.edit().putBoolean("scan_full", ScanPlanner.fullMap).apply()
-            fmText()
-        }
-        scanCard.addView(fmBtn)
-        AutoScan.dragMode = prefs.getBoolean("scan_drag", true)
-        AutoScan.dragDir = if (prefs.getBoolean("drag_rev", false)) -1 else 1
-        val dmBtn = pill("", cTile, cText) {}.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) }
-        fun dmText() { dmBtn.text = "🖐 طريقة المسح: " + (if (AutoScan.dragMode) "سحب الخريطة تلقائياً" else "انتقال بالإحداثيات") }
-        dmText()
-        dmBtn.setOnClickListener {
-            AutoScan.dragMode = !AutoScan.dragMode
-            prefs.edit().putBoolean("scan_drag", AutoScan.dragMode).apply()
-            dmText()
-        }
-        scanCard.addView(dmBtn)
-        val ddBtn = pill("", cTile, cText) {}.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) }
-        fun ddText() { ddBtn.text = "↔ اتجاه السحب: " + (if (AutoScan.dragDir == 1) "عادي" else "معكوس") }
-        ddText()
-        ddBtn.setOnClickListener {
-            AutoScan.dragDir = -AutoScan.dragDir
-            prefs.edit().putBoolean("drag_rev", AutoScan.dragDir == -1).apply()
-            ddText()
-        }
-        scanCard.addView(ddBtn)
-        scanCard.addView(pill("🔄  مسح جديد لكل الخريطة من البداية", cTile, cText) {
-            ScanPlanner.newSweep()
-            Toast.makeText(this, "بدأ مسح جديد لكل الخريطة", Toast.LENGTH_SHORT).show()
-        }.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) })
         scanCard.addView(label("أول مرة: فعّل «Lords Capture — المسح الآلي» من إعدادات إمكانية الوصول (الزر يفتحها). ثم اضغط بدء وانتقل إلى اللعبة وانتظر. يحتاج الالتقاط يعمل."))
         root.addView(scanCard)
 

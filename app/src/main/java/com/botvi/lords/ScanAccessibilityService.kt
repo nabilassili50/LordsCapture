@@ -123,25 +123,6 @@ class ScanAccessibilityService : AccessibilityService() {
 
     fun tap(x: Int, y: Int): Boolean = gesture(listOf(intArrayOf(x, y, 0)))
 
-    /** One straight drag from (x1,y1) to (x2,y2) in design coordinates, taking [durMs] (slow enough that the game does not fling the map). */
-    fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durMs: Int): Boolean {
-        val path = Path()
-        path.moveTo(x1 * scaleX, y1 * scaleY)
-        path.lineTo(x2 * scaleX, y2 * scaleY)
-        val gd = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, durMs.toLong()))
-            .build()
-        val latch = CountDownLatch(1)
-        val ok = BooleanArray(1)
-        val cb = object : GestureResultCallback() {
-            override fun onCompleted(g: GestureDescription?) { ok[0] = true; latch.countDown() }
-            override fun onCancelled(g: GestureDescription?) { latch.countDown() }
-        }
-        main.post { if (!dispatchGesture(gd, cb, null)) latch.countDown() }
-        latch.await((durMs + 3000).toLong(), TimeUnit.MILLISECONDS)
-        return ok[0]
-    }
-
     /** Takes a screenshot (Android 11+); retries because the system limits how often it can be called. */
     @TargetApi(30)
     fun shot(): Shot? {
@@ -192,13 +173,15 @@ private fun isCity(s: Shot): Boolean { val a = s.avg(1140, 720, 1255, 775); retu
 /** Automatic map scan: visits the blocks ScanPlanner asks for, using the game's coordinate-search dialog. */
 object AutoScan {
     @Volatile var running = false
-    @Volatile var status = "متوقف"
+    @Volatile private var st = "متوقف"
+    /** every change of state (except the running/stopped ones) is also written to the app log */
+    var status: String
+        get() = st
+        set(v) {
+            if (v != st && !v.startsWith("يعمل") && !v.startsWith("متوقف") && v != "يبدأ…") Store.log("المسح الآلي: $v")
+            st = v
+        }
     @Volatile var stopOnWatch = true
-    @Volatile var dragMode = true             // true: pan the map by dragging, row after row; false: jump with the coordinate dialog
-    @Volatile var dragDir = 1                 // 1: finger moves left -> view moves east (+X); -1 reverses it
-    @Volatile var unitsPerDrag = 16.0         // map units the view moves per drag, learned from the castles that arrive
-    private const val DRAG_PX = 360           // design pixels (of 1280) per drag: ~28% of the screen width, so every drag overlaps the previous view
-    private const val MAX_DRAGS = 90
     private var ackXY = -1
     private var th: Thread? = null
     @Volatile private var slow = 1.0
@@ -207,8 +190,8 @@ object AutoScan {
     private const val MIN_C = 24   // the map edge rows/columns (0..23) were rejected by the game's number pad / dialog
     private const val MAX_X = 508
     private const val MAX_Y = 1020
-    private const val DEAD_STRIKES = 3          // consecutive checks that say the capture is down before we stop
-    private const val DEAD_IDLE_MS = 300_000L   // no game frame at all for 5 min while the status is not "يلتقط"
+    private const val QUIET_DEAD = 8      // consecutive jumps with NO game packet at all -> the capture is dead
+    private const val QUIET_MAX = 150     // consecutive jumps without a new map packet (area already cached by the game)
 
     private val KEYS = mapOf(
         '1' to intArrayOf(192, 330), '2' to intArrayOf(289, 330), '3' to intArrayOf(387, 330),
@@ -227,7 +210,7 @@ object AutoScan {
         fails.clear()
         status = "يبدأ…"
         th = Thread {
-            try { if (dragMode) dragLoop() else loop() } catch (e: Throwable) { Store.log("المسح الآلي: ${e.javaClass.simpleName} ${e.message}") }
+            try { loop() } catch (e: Throwable) { Store.log("المسح الآلي: ${e.javaClass.simpleName} ${e.message}") }
             Store.log("المسح الآلي: انتهى — آخر حالة: $status")
             running = false
             val last = status
@@ -241,25 +224,15 @@ object AutoScan {
         status = "متوقف"
     }
 
-    /** sleeps in short slices so the stop button takes effect within ~0.1 s instead of after the current wait */
-    private fun sleep(ms: Int) {
-        try {
-            var left = ms
-            while (left > 0 && running) {
-                val d = minOf(left, 100)
-                Thread.sleep(d.toLong())
-                left -= d
-            }
-        } catch (_: InterruptedException) { running = false }
-    }
+    private fun sleep(ms: Int) { try { Thread.sleep(ms.toLong()) } catch (_: InterruptedException) { running = false } }
 
     private fun loop() {
         var visited = 0
         var quiet = 0
         var bad = 0
         var mprev = Store.stats().mapFrames
-        var deadN = 0
-        var lastGood: IntArray? = null   // last coordinates the game accepted: used to tell "rejected coordinates" from "stuck game"
+        var fprev = Store.frames   // any game frame (chat, etc.) proves the capture is alive
+        var dead = 0
         val startMs = System.currentTimeMillis()
         var known = false   // after a successful jump we are certainly on the map: colour checks are unreliable over sea/mountains
         while (running) {
@@ -288,22 +261,26 @@ object AutoScan {
                 bad = 0
                 known = true
                 // packets arrive asynchronously (and the game does not re-send blocks it already cached), so wait a bit
-                // over sea / empty land / areas the game already cached the server sends nothing: that is normal, never a reason to stop
-                val maxWait = if (quiet >= 3) 3 else 6
                 var m = Store.stats().mapFrames
                 var w = 0
-                while (m <= mprev && w < maxWait && running) { sleep(500); w++; m = Store.stats().mapFrames }
+                while (m <= mprev && w < 6 && running) { sleep(500); w++; m = Store.stats().mapFrames }
+                val gained = m - mprev
                 if (m > mprev) quiet = 0 else quiet++
                 mprev = m
-                lastGood = intArrayOf(jx, jy)
-                val why = captureDead()
-                if (why != null) {
-                    if (++deadN >= DEAD_STRIKES) {
-                        status = why
-                        Store.log("المسح الآلي: توقف — $why")
-                        return
-                    }
-                } else deadN = 0
+                Store.log("المسح الآلي: X:$jx Y:$jy (${t.note}) — حزم خريطة +$gained • قلاع ${Store.stats().castles}")
+                val fr = Store.frames
+                if (fr > fprev) dead = 0 else dead++
+                fprev = fr
+                if (dead >= QUIET_DEAD) {
+                    status = "الالتقاط غير حيّ — لا تصل أي حزمة من اللعبة (تحقق من PCAPdroid)"
+                    Store.log("المسح الآلي: توقف — لا حزم إطلاقاً بعد $dead انتقالات متتالية")
+                    return
+                }
+                if (quiet >= QUIET_MAX) {
+                    status = "لا حزم خريطة جديدة منذ $quiet انتقالاً"
+                    Store.log("المسح الآلي: توقف — لا حزم خريطة جديدة منذ $quiet انتقالاً")
+                    return
+                }
                 sleep(300)
                 if (checkWatch(svc, startMs)) return
                 ScanPlanner.markVisited(t.x, t.y)
@@ -311,8 +288,7 @@ object AutoScan {
                 visited++
                 slow = 1.0
                 status = "يعمل — X:$jx Y:$jy (${visited} موقع، ${(System.currentTimeMillis() - t0) / 1000.0} ث)" +
-                    (if (quiet >= 3) " • بلا حزم جديدة ($quiet): ماء/منطقة فارغة أو محمّلة سابقاً — نكمل" else "") +
-                    "\n" + ScanPlanner.sweepText()
+                    (if (quiet >= 3) " • بلا حزم خريطة جديدة ($quiet) — منطقة محمّلة سابقاً في اللعبة، نبتعد عنها" else "")
             } else {
                 known = false
                 slow = 1.8
@@ -324,138 +300,7 @@ object AutoScan {
                     ScanPlanner.markVisited(t.x, t.y)
                     fails.remove(key)
                 }
-                bad++
-                val g = lastGood
-                if (bad >= 6 && g != null) {
-                    // many failures in a row: re-try a spot that worked before. If it works, the failing coordinates are simply rejected (sea/edge) -> skip them and go on
-                    if (jump(svc, g[0], g[1])) {
-                        Store.log("المسح الآلي: الإحداثيات المرفوضة تُتخطّى — الموقع السابق ما زال يعمل")
-                        bad = 0
-                        known = true
-                        slow = 1.0
-                        continue
-                    }
-                    recover(svc)
-                }
-                if (bad > 20) { status = "فشل متكرر — أوقفت المسح، راجع السجل"; return }
-            }
-        }
-    }
-
-    /** null while the capture is alive; otherwise why it looks dead. Silence over the sea is NOT death: only a stopped capture counts. */
-    private fun captureDead(): String? {
-        val st = Store.status
-        if (st.contains("متوقف")) return "الالتقاط متوقف — شغّل PCAPdroid والالتقاط ($st)"
-        val last = Store.lastFrameMs
-        val idle = System.currentTimeMillis() - last
-        if (last > 0 && idle > DEAD_IDLE_MS && !st.startsWith("يلتقط")) return "لا حزم من اللعبة منذ ${idle / 1000} ث (تحقق من PCAPdroid)"
-        return null
-    }
-
-    private fun pct95(a: IntArray): Int = a[minOf(a.size - 1, (a.size * 95) / 100)]
-
-    /**
-     * Whole-kingdom scan by dragging: for each map row the view is anchored once with the coordinate dialog (exact position),
-     * then dragged east in overlapping steps until the east edge. Nothing here depends on land or sea; silence is not a reason to stop.
-     */
-    private fun dragLoop() {
-        var mprev = Store.stats().mapFrames
-        var deadN = 0
-        var bad = 0
-        var rowFails = 0
-        var rows = 0
-        var quiet = 0
-        var swipeFails = 0
-        val startMs = System.currentTimeMillis()
-        while (running) {
-            val svc = ScanAccessibilityService.inst
-            if (svc == null) { status = "الخدمة غير مفعّلة"; return }
-            if (checkWatch(svc, startMs)) return
-            if (!svc.inGame()) { status = "في انتظار ظهور اللعبة في المقدمة…"; sleep(800); continue }
-            val s0 = svc.shot()
-            if (s0 == null) { status = "تعذّر التقاط الشاشة"; sleep(700); continue }
-            if (!s0.landscape) { status = "الشاشة عمودية — يلزم الوضع الأفقي"; sleep(1000); continue }
-            if (dialogOpen(s0) || keypadOpen(s0)) { recover(svc); continue }
-            if (isCity(s0)) { svc.tap(1195, 745); sleep(3500); continue }
-            val row = ScanPlanner.nextDragRow()
-            if (row == null) {
-                status = "اكتمل مسح كل المملكة ✔ — اضغط «مسح جديد لكل الخريطة» لإعادة المسح"
-                Store.log("المسح الآلي: $status")
-                return
-            }
-            val jx = maxOf(MIN_C, minOf(row[1], MAX_X))
-            val jy = maxOf(MIN_C, minOf(row[0], MAX_Y))
-            // 1) anchor the row at its first unseen block
-            if (!jump(svc, jx, jy)) {
-                slow = 1.8
-                recover(svc)
-                rowFails++
-                bad++
-                if (rowFails >= 2) {
-                    Store.log("المسح الآلي: تخطّي X:$jx Y:$jy بعد فشلين")
-                    ScanPlanner.markVisited(row[1], row[0])
-                    rowFails = 0
-                }
-                if (bad > 20) { status = "فشل متكرر — أوقفت المسح، راجع السجل"; return }
-                continue
-            }
-            bad = 0
-            rowFails = 0
-            slow = 1.0
-            rows++
-            var x = jx.toDouble()
-            ScanPlanner.markVisited(jx, jy)
-            sleep(1500)
-            // 2) drag east across the row
-            var drags = 0
-            var edgePrev = -1
-            var sincePrev = 0
-            var noMap = 0
-            while (running && x < MAX_X && drags < MAX_DRAGS) {
-                if (checkWatch(svc, startMs)) return
-                if (!svc.inGame()) { status = "في انتظار ظهور اللعبة في المقدمة…"; sleep(800); continue }
-                val t0 = System.currentTimeMillis()
-                if (!svc.swipe(950, 420, 950 - dragDir * DRAG_PX, 420, 700)) {
-                    Store.log("المسح الآلي: فشلت السحبة")
-                    if (++swipeFails > 15) { status = "فشل متكرر في السحب — أوقفت المسح، راجع السجل"; return }
-                    break
-                }
-                swipeFails = 0
-                drags++
-                sincePrev++
-                sleep(500)   // let the map settle
-                var m = Store.stats().mapFrames
-                var w = 0
-                val maxWait = if (quiet >= 3) 4 else 8
-                while (m <= mprev && w < maxWait && running) { sleep(250); w++; m = Store.stats().mapFrames }
-                if (m > mprev) { quiet = 0; noMap = 0 } else { quiet++; noMap++ }
-                mprev = m
-                // learn how far one drag moves the view: the right edge of the castles that just arrived
-                val xs = Store.castleXsSince(t0 / 1000)
-                if (xs.size >= 8) {
-                    val edge = pct95(xs)
-                    if (edgePrev >= 0) {
-                        val dd = (edge - edgePrev).toDouble() / sincePrev
-                        if (dd in 3.0..80.0) unitsPerDrag = 0.7 * unitsPerDrag + 0.3 * dd
-                    }
-                    edgePrev = edge
-                    sincePrev = 0
-                }
-                val prev = x
-                x += unitsPerDrag
-                ScanPlanner.markSpan(prev.toInt(), minOf(x.toInt(), MAX_X), jy)
-                val why = captureDead()
-                if (why != null) {
-                    if (++deadN >= DEAD_STRIKES) { status = why; Store.log("المسح الآلي: توقف — $why"); return }
-                } else deadN = 0
-                status = "سحب — صف Y:$jy • X≈${x.toInt()} • صف رقم $rows (${Math.round(unitsPerDrag * 10) / 10.0} وحدة/سحبة)" +
-                    (if (noMap >= 6) " • لا حزم جديدة: ماء/منطقة فارغة، أو اتجاه السحب معكوس («↔ اتجاه السحب»)" else "") +
-                    "\n" + ScanPlanner.sweepText()
-                if (drags % 5 == 0) {
-                    val s = svc.shot()
-                    if (s != null && (dialogOpen(s) || keypadOpen(s))) { recover(svc); break }
-                    if (s != null && isCity(s)) { svc.tap(1195, 745); sleep(3500); break }
-                }
+                if (++bad > 20) { status = "فشل متكرر — أوقفت المسح، راجع السجل"; return }
             }
         }
     }
@@ -486,7 +331,6 @@ object AutoScan {
         for (c in y.toString()) { val p = KEYS[c] ?: return false; g1.add(intArrayOf(p[0], p[1], t)); t += d(140) }
         g1.add(intArrayOf(363, 543, t + d(20)))
         if (!svc.gesture(g1)) return false
-        if (!running) return false
         sleep(d(300))
         var s = svc.shot() ?: return false
         if (keypadOpen(s)) { sleep(d(500)); s = svc.shot() ?: return false }
@@ -499,7 +343,6 @@ object AutoScan {
         g2.add(intArrayOf(363, 543, t + d(20)))
         g2.add(intArrayOf(637, 444, t + d(20) + d(380)))
         if (!svc.gesture(g2)) return false
-        if (!running) return false
         sleep(d(1500))
         s = svc.shot() ?: return false
         if (dialogOpen(s)) { sleep(d(800)); s = svc.shot() ?: return false }

@@ -87,12 +87,7 @@ object Store {
     )
     class Snapshot(val json: String, val items: Int)
 
-    @Volatile var lastFrameMs: Long = 0L
-    fun onFrame() { frames++; lastFrameMs = System.currentTimeMillis(); version++ }
-
-    /** sorted X coordinates of the castles whose packet arrived at or after [sinceSec] (epoch seconds) — used by the drag scan to learn how far the view moved */
-    @Synchronized
-    fun castleXsSince(sinceSec: Long): IntArray = mapPlayers.values.filter { it.at >= sinceSec }.map { it.v.x }.sorted().toIntArray()
+    fun onFrame() { frames++; version++ }
 
     @Synchronized
     fun setUpload(msg: String) { lastUpload = fmt.format(Date()) + "  " + msg; version++ }
@@ -272,7 +267,6 @@ object Store {
             for (m in moves) sb.append("V\t${m.at}\t${esc(m.name)}\t${esc(m.guild)}\t${m.realm}\t${m.fx}\t${m.fy}\t${m.tx}\t${m.ty}\t${m.gap}\n")
             for ((name, list) in mightHist) for (pt in list) sb.append("H\t${esc(name)}\t${pt.at}\t${pt.might}\t${pt.kills}\n")
             for ((k, v) in ops) sb.append("O\t$k\t${v.count}\t${v.bytes}\t${v.parsed}\n")
-            for ((bi, bt) in ScanPlanner.exportSeen()) sb.append("B\t$bi\t$bt\n")
             val tmp = File(d, "store.tmp")
             tmp.writeText(sb.toString())
             val f = File(d, "store.dat")
@@ -311,7 +305,6 @@ object Store {
                                 CastlePopup(x, y, unesc(t[4]), t[5].toInt(), t[6].toInt(), t[7].toLong(), t[8].toLong())))
                             ScanPlanner.onPopup(x, y, t[1].toLong() * 1000)
                         }
-                        "B" -> ScanPlanner.importSeen(t[1].toInt(), t[2].toLong())
                         "X" -> {
                             val x = t[2].toInt(); val y = t[3].toInt()
                             mapObjs.put(key(x, y), Stamped(t[1].toLong(), MapObject(x, y, t[4].toInt(), unesc(t[5]), unesc(t[6]))))
