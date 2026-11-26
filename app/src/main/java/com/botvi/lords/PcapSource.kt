@@ -137,11 +137,16 @@ class PcapStreamReader(
     fun pump(isRunning: () -> Boolean) {
         val gh = ByteArray(24)
         readFully(gh)
+        // pcapng (PCAPdroid option "pcapng format"): starts with the section header block 0A 0D 0D 0A
+        if (gh[0] == 0x0A.toByte() && gh[1] == 0x0D.toByte() && gh[2] == 0x0D.toByte() && gh[3] == 0x0A.toByte()) {
+            pumpNg(gh, isRunning)
+            return
+        }
         val magic = ByteBuffer.wrap(gh).order(ByteOrder.LITTLE_ENDIAN).getInt(0)
         val order = when (magic) {
             MAGIC_LE, MAGIC_LE_NS -> ByteOrder.LITTLE_ENDIAN
             MAGIC_BE, MAGIC_BE_NS -> ByteOrder.BIG_ENDIAN
-            else -> throw IOException("not a classic pcap stream")
+            else -> throw IOException(describeBadStart(gh))
         }
         val link = ByteBuffer.wrap(gh).order(order).getInt(20)
         val skip = when (link) {
@@ -165,6 +170,67 @@ class PcapStreamReader(
                 if (et != 0x0800) continue
             }
             onIp(buf, skip, incl - skip)
+        }
+    }
+
+    /** explains what the port answered with instead of a pcap stream (a web page = another server owns the port) */
+    private fun describeBadStart(gh: ByteArray): String {
+        val ascii = String(CharArray(8) { i -> val c = gh[i].toInt() and 0xFF; if (c in 32..126) c.toChar() else '.' })
+        val hex = (0 until 4).joinToString(" ") { String.format("%02X", gh[it].toInt() and 0xFF) }
+        val web = ascii.startsWith("<") || ascii.startsWith("HTTP") || ascii.startsWith("{") || ascii.startsWith("[")
+        return if (web) "المنفذ يرد بصفحة ويب ($ascii) وليس PCAPdroid — خادم آخر (مثل KSWEB) يستعمل نفس المنفذ؛ غيّر منفذ PCAPdroid أو أوقف الخادم"
+        else "ليس تدفق pcap كلاسيكي (يبدأ بـ $hex '$ascii')"
+    }
+
+    private fun deliver(buf: ByteArray, off: Int, cap: Int, link: Int) {
+        val skip = when (link) {
+            101, 228, 12 -> 0
+            1 -> 14
+            113 -> 16
+            else -> return
+        }
+        if (cap <= skip) return
+        if (link == 1) {
+            val et = ((buf[off + 12].toInt() and 0xFF) shl 8) or (buf[off + 13].toInt() and 0xFF)
+            if (et != 0x0800) return
+        }
+        onIp(buf, off + skip, cap - skip)
+    }
+
+    /** pcapng stream: section header, interface descriptions (link type) and enhanced/simple packet blocks */
+    private fun pumpNg(gh: ByteArray, isRunning: () -> Boolean) {
+        val bom = ByteBuffer.wrap(gh).order(ByteOrder.LITTLE_ENDIAN).getInt(8)
+        val order = if (bom == 0x1A2B3C4D) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN
+        val shbLen = ByteBuffer.wrap(gh).order(order).getInt(4)
+        if (shbLen < 28 || shbLen > 65536) throw IOException("bad pcapng header")
+        if (shbLen > 24) readFully(ByteArray(shbLen - 24))     // rest of the section header block
+        val links = ArrayList<Int>()
+        val head = ByteArray(8)
+        var buf = ByteArray(65536 + 64)
+        while (isRunning()) {
+            readFully(head)
+            val hb = ByteBuffer.wrap(head).order(order)
+            val type = hb.getInt(0)
+            val total = hb.getInt(4)
+            if (total < 12 || total > 4_000_000) throw IOException("bad pcapng block size $total")
+            val bodyLen = total - 8
+            if (buf.size < bodyLen) buf = ByteArray(bodyLen)
+            readFully(buf, bodyLen)
+            val bb = ByteBuffer.wrap(buf).order(order)
+            when (type) {
+                0x0A0D0D0A -> links.clear()                                   // a new section starts: interfaces restart
+                0x00000001 -> if (bodyLen >= 2) links.add(bb.getShort(0).toInt() and 0xFFFF)
+                0x00000006 -> if (bodyLen >= 20) {                            // enhanced packet block
+                    val ifId = bb.getInt(0)
+                    val cap = bb.getInt(12)
+                    if (cap >= 0 && 20 + cap <= bodyLen) deliver(buf, 20, cap, links.getOrElse(ifId) { 1 })
+                }
+                0x00000003 -> if (bodyLen >= 8) {                             // simple packet block
+                    val cap = minOf(bb.getInt(0), bodyLen - 8)
+                    if (cap > 0) deliver(buf, 4, cap, links.getOrElse(0) { 1 })
+                }
+                else -> {}
+            }
         }
     }
 
