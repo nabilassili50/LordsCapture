@@ -90,6 +90,9 @@ class MainActivity : Activity() {
     private lateinit var moreBtn: Button
     private var lastVer = -1L
     private var lastStatus = ""
+    private lateinit var planEt: EditText
+    private lateinit var planFromEt: EditText
+    private var lastPlanNext = -1
 
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -231,9 +234,9 @@ class MainActivity : Activity() {
         }
 
         // header
-        title = "Lords Capture v1 • update40"
+        title = "Lords Capture v1 • update41"
         root.addView(tv("Lords Capture", 24f, Color.WHITE, true))
-        root.addView(tv("الإصدار: update40", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
+        root.addView(tv("الإصدار: update41", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
         root.addView(tv("التقاط سلبي لبيانات اللعبة — لا يعدّل ولا يرسل شيئاً للعبة", 12f, cMuted).apply {
             setPadding(0, dp(2), 0, dp(12))
         })
@@ -335,25 +338,55 @@ class MainActivity : Activity() {
         val rk = field("عدد النقاط", prefs.getString("rg_k", "12") ?: "12", true)
         val rn = field("مربعات/نقطة (0=تلقائي)", prefs.getString("rg_n", "0") ?: "0", true)
         scanCard.addView(rowOf(half(rk, true), half(rn)))
-        scanCard.addView(pill("🗺  ابدأ مسح المنطقة", cAccent, Color.WHITE) {
-            val a = rx1.text.toString().trim().toIntOrNull()
-            val b = ry1.text.toString().trim().toIntOrNull()
-            val c = rx2.text.toString().trim().toIntOrNull()
-            val d = ry2.text.toString().trim().toIntOrNull()
-            if (a == null || b == null || c == null || d == null) {
-                Toast.makeText(this, "أدخل X1 Y1 X2 Y2", Toast.LENGTH_SHORT).show()
-            } else {
-                val k = (rk.text.toString().trim().toIntOrNull() ?: 12).coerceIn(1, 400)
-                val n = (rn.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 400)
-                prefs.edit().putString("rg_x1", a.toString()).putString("rg_y1", b.toString())
-                    .putString("rg_x2", c.toString()).putString("rg_y2", d.toString())
-                    .putString("rg_k", k.toString()).putString("rg_n", n.toString()).apply()
-                val plan = AutoScan.planRegion(a, b, c, d, k)
-                val sq = if (n > 0) n else AutoScan.autoSquares(plan)
-                val msg = AutoScan.startRegion(a, b, c, d, k, n)
-                Toast.makeText(this, msg ?: "بدأ: ${plan.pts.size} نقطة (${plan.cols}×${plan.rows}) × $sq مربع", Toast.LENGTH_LONG).show()
-            }
-        }.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) })
+        planEt = field("X,Y في كل سطر — أو اضغط «بناء القائمة»", prefs.getString("plan_text", "") ?: "", false)
+        planEt.setSingleLine(false)
+        planEt.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        planEt.minLines = 6
+        planEt.maxLines = 14
+        planEt.gravity = Gravity.TOP
+        planEt.typeface = Typeface.MONOSPACE
+        planFromEt = field("من نقطة رقم", "1", true)
+        scanCard.addView(rowOf(
+            half(pill("🌍 كل المملكة", cTile, cText) {
+                rx1.setText("24"); ry1.setText("24"); rx2.setText("504"); ry2.setText("1016")
+            }, true),
+            half(pill("📋 بناء القائمة", cTile, cText) {
+                val a = rx1.text.toString().trim().toIntOrNull()
+                val b = ry1.text.toString().trim().toIntOrNull()
+                val c = rx2.text.toString().trim().toIntOrNull()
+                val d = ry2.text.toString().trim().toIntOrNull()
+                if (a == null || b == null || c == null || d == null) {
+                    Toast.makeText(this, "أدخل X1 Y1 X2 Y2 (أو اضغط «كل المملكة»)", Toast.LENGTH_SHORT).show()
+                } else {
+                    val k = (rk.text.toString().trim().toIntOrNull() ?: 12).coerceIn(1, 400)
+                    val plan = AutoScan.planRegion(a, b, c, d, k)
+                    planEt.setText(plan.pts.joinToString("\n") { "${it[0]},${it[1]}" })
+                    rn.setText(AutoScan.autoSquares(plan).toString())
+                    planFromEt.setText("1")
+                    prefs.edit().putString("rg_x1", a.toString()).putString("rg_y1", b.toString())
+                        .putString("rg_x2", c.toString()).putString("rg_y2", d.toString())
+                        .putString("rg_k", k.toString()).apply()
+                    Toast.makeText(this, "${plan.pts.size} نقطة (${plan.cols}×${plan.rows}) — عدّل القائمة إن شئت ثم نفّذها", Toast.LENGTH_LONG).show()
+                }
+            })
+        ))
+        scanCard.addView(planEt)
+        scanCard.addView(rowOf(
+            half(planFromEt, true),
+            half(pill("▶ تنفيذ القائمة", cAccent, Color.WHITE) {
+                val pts = AutoScan.parsePlan(planEt.text.toString())
+                if (pts.isEmpty()) {
+                    Toast.makeText(this, "القائمة فارغة — اضغط «بناء القائمة» أو اكتب X,Y في كل سطر", Toast.LENGTH_SHORT).show()
+                } else {
+                    val n0 = rn.text.toString().trim().toIntOrNull() ?: 25
+                    val n = (if (n0 <= 0) 25 else n0).coerceIn(2, 400)
+                    val from = ((planFromEt.text.toString().trim().toIntOrNull() ?: 1) - 1).coerceIn(0, pts.size - 1)
+                    prefs.edit().putString("plan_text", planEt.text.toString()).putString("rg_n", n.toString()).apply()
+                    val msg = AutoScan.startPlan(pts, n, from)
+                    Toast.makeText(this, msg ?: "بدأ: ${pts.size} نقطة × $n مربع (من النقطة ${from + 1})", Toast.LENGTH_LONG).show()
+                }
+            })
+        ))
         scanCard.addView(pill("🌀  ابدأ المسح الدائري", cAccent, Color.WHITE) {
             val h = Store.watchHit
             val x = spX.text.toString().trim().toIntOrNull() ?: h?.x
@@ -965,6 +998,10 @@ class MainActivity : Activity() {
 
     private fun refresh(forceNow: Boolean = false) {
         if (!::logTv.isInitialized) return
+        if (::planFromEt.isInitialized && AutoScan.planNext != lastPlanNext) {     // after a stop, offer to resume from the point where it stopped
+            lastPlanNext = AutoScan.planNext
+            planFromEt.setText((lastPlanNext + 1).toString())
+        }
         val v = Store.version
         val s = Store.status
         if (!forceNow && v == lastVer && s == lastStatus) return
@@ -1027,6 +1064,7 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        if (::planEt.isInitialized) getSharedPreferences("lc", MODE_PRIVATE).edit().putString("plan_text", planEt.text.toString()).apply()
         saveServerPrefs()
         Store.save()
         handler.removeCallbacks(ticker)

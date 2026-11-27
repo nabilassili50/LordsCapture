@@ -203,6 +203,10 @@ object AutoScan {
     private var speedFails = 0
     @Volatile private var spiralMode = false
     @Volatile private var regionMode = false
+    @Volatile private var planMode = false
+    @Volatile var planNext = 0            // 0-based index of the next point of the list: stays put when the run stops, so it can be resumed
+    private var planPts: List<IntArray> = emptyList()
+    private var planSq = 25
     private var rg = IntArray(5)          // first x, first y, last x, last y, number of points
     private var rgN = 0                   // squares per point (0 = automatic)
     private var spX = 0
@@ -250,11 +254,12 @@ object AutoScan {
         fails.clear()
         status = "يبدأ…"
         th = Thread {
-            try { if (regionMode) regionLoop() else if (spiralMode) spiralLoop(spX, spY, spN) else if (dragMode) dragLoop() else loop() } catch (e: Throwable) { Store.log("المسح الآلي: ${e.javaClass.simpleName} ${e.message}") }
+            try { if (planMode) planLoop() else if (regionMode) regionLoop() else if (spiralMode) spiralLoop(spX, spY, spN) else if (dragMode) dragLoop() else loop() } catch (e: Throwable) { Store.log("المسح الآلي: ${e.javaClass.simpleName} ${e.message}") }
             Store.log("المسح الآلي: انتهى — آخر حالة: $status")
             running = false
             spiralMode = false
             regionMode = false
+            planMode = false
             val last = status
             status = if (last == "متوقف" || last.startsWith("وجدت")) last else "متوقف — $last"
         }.also { it.isDaemon = true; it.start() }
@@ -271,6 +276,59 @@ object AutoScan {
         val r = start()
         if (r != null) spiralMode = false
         return r
+    }
+
+    /** reads "x,y" lines (any separators; the first two numbers of each line count) and clamps them to the jumpable area */
+    fun parsePlan(text: String): List<IntArray> {
+        val re = Regex("(\\d+)\\D+(\\d+)")
+        val out = ArrayList<IntArray>()
+        for (line in text.lines()) {
+            val m = re.find(line) ?: continue
+            val x = m.groupValues[1].toIntOrNull() ?: continue
+            val y = m.groupValues[2].toIntOrNull() ?: continue
+            out.add(intArrayOf(maxOf(MIN_C, minOf(x, MAX_X)), maxOf(MIN_C, minOf(y, MAX_Y))))
+        }
+        return out
+    }
+
+    /** runs a fixed list of jump points: jump to point i, scan around it by dragging in a spiral of [n] squares, then jump to the next */
+    fun startPlan(pts: List<IntArray>, n: Int, from: Int): String? {
+        if (running) return "المسح يعمل — أوقفه أولاً"
+        if (pts.isEmpty()) return "القائمة فارغة"
+        planPts = pts
+        planSq = n
+        planNext = from.coerceIn(0, pts.size - 1)
+        planMode = true
+        val r = start()
+        if (r != null) planMode = false
+        return r
+    }
+
+    private fun planLoop() {
+        val pts = planPts
+        val total = pts.size
+        val n = planSq
+        val startMs = System.currentTimeMillis()
+        val castles0 = Store.stats().castles
+        var skipped = 0
+        var i = planNext.coerceIn(0, total)
+        Store.log("القائمة: $total نقطة × $n مربع — من النقطة ${i + 1}")
+        while (i < total) {
+            if (!running) return
+            val pt = pts[i]
+            val r = spiralAt(pt[0], pt[1], n, "نقطة ${i + 1}/$total • ", startMs)
+            if (r == 1) {                                   // stopped / watched player found / capture down: this point is repeated on resume
+                Store.log("القائمة: توقف عند النقطة ${i + 1}/$total X:${pt[0]} Y:${pt[1]}")
+                return
+            }
+            if (r == 2) skipped++
+            i++
+            planNext = i
+        }
+        status = "اكتملت القائمة ($total نقطة × $n مربع) ✔ — قلاع جديدة: +${Store.stats().castles - castles0}" +
+            (if (skipped > 0) " • نقاط تعذّر الانتقال إليها: $skipped" else "")
+        Store.log("المسح الآلي: $status")
+        planNext = 0
     }
 
     /** region scan: points between (x1,y1) and (x2,y2), each visited with a jump and scanned in a spiral of [n] squares (0 = automatic) */
