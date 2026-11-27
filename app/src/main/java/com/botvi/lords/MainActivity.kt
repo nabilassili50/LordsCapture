@@ -231,9 +231,9 @@ class MainActivity : Activity() {
         }
 
         // header
-        title = "Lords Capture v1 • update39"
+        title = "Lords Capture v1 • update40"
         root.addView(tv("Lords Capture", 24f, Color.WHITE, true))
-        root.addView(tv("الإصدار: update39", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
+        root.addView(tv("الإصدار: update40", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
         root.addView(tv("التقاط سلبي لبيانات اللعبة — لا يعدّل ولا يرسل شيئاً للعبة", 12f, cMuted).apply {
             setPadding(0, dp(2), 0, dp(12))
         })
@@ -326,6 +326,34 @@ class MainActivity : Activity() {
         val spY = field("Y", prefs.getString("sp_y", "") ?: "", true)
         val spN = field("100", prefs.getString("sp_n", "100") ?: "100", true)
         scanCard.addView(rowOf(half(spX, true), half(spY), half(spN)))
+        scanCard.addView(label("مسح منطقة بنقاط — النقطة الأولى X1 Y1 والأخيرة X2 Y2"))
+        val rx1 = field("X1", prefs.getString("rg_x1", "") ?: "", true)
+        val ry1 = field("Y1", prefs.getString("rg_y1", "") ?: "", true)
+        val rx2 = field("X2", prefs.getString("rg_x2", "") ?: "", true)
+        val ry2 = field("Y2", prefs.getString("rg_y2", "") ?: "", true)
+        scanCard.addView(rowOf(half(rx1, true), half(ry1), half(rx2), half(ry2)))
+        val rk = field("عدد النقاط", prefs.getString("rg_k", "12") ?: "12", true)
+        val rn = field("مربعات/نقطة (0=تلقائي)", prefs.getString("rg_n", "0") ?: "0", true)
+        scanCard.addView(rowOf(half(rk, true), half(rn)))
+        scanCard.addView(pill("🗺  ابدأ مسح المنطقة", cAccent, Color.WHITE) {
+            val a = rx1.text.toString().trim().toIntOrNull()
+            val b = ry1.text.toString().trim().toIntOrNull()
+            val c = rx2.text.toString().trim().toIntOrNull()
+            val d = ry2.text.toString().trim().toIntOrNull()
+            if (a == null || b == null || c == null || d == null) {
+                Toast.makeText(this, "أدخل X1 Y1 X2 Y2", Toast.LENGTH_SHORT).show()
+            } else {
+                val k = (rk.text.toString().trim().toIntOrNull() ?: 12).coerceIn(1, 400)
+                val n = (rn.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 400)
+                prefs.edit().putString("rg_x1", a.toString()).putString("rg_y1", b.toString())
+                    .putString("rg_x2", c.toString()).putString("rg_y2", d.toString())
+                    .putString("rg_k", k.toString()).putString("rg_n", n.toString()).apply()
+                val plan = AutoScan.planRegion(a, b, c, d, k)
+                val sq = if (n > 0) n else AutoScan.autoSquares(plan)
+                val msg = AutoScan.startRegion(a, b, c, d, k, n)
+                Toast.makeText(this, msg ?: "بدأ: ${plan.pts.size} نقطة (${plan.cols}×${plan.rows}) × $sq مربع", Toast.LENGTH_LONG).show()
+            }
+        }.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) })
         scanCard.addView(pill("🌀  ابدأ المسح الدائري", cAccent, Color.WHITE) {
             val h = Store.watchHit
             val x = spX.text.toString().trim().toIntOrNull() ?: h?.x

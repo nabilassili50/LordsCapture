@@ -202,6 +202,9 @@ object AutoScan {
     @Volatile var speed = 1                   // 0 normal, 1 fast, 2 max: shortens drag time, settle time and the wait for map packets
     private var speedFails = 0
     @Volatile private var spiralMode = false
+    @Volatile private var regionMode = false
+    private var rg = IntArray(5)          // first x, first y, last x, last y, number of points
+    private var rgN = 0                   // squares per point (0 = automatic)
     private var spX = 0
     private var spY = 0
     private var spN = 100
@@ -247,10 +250,11 @@ object AutoScan {
         fails.clear()
         status = "يبدأ…"
         th = Thread {
-            try { if (spiralMode) spiralLoop(spX, spY, spN) else if (dragMode) dragLoop() else loop() } catch (e: Throwable) { Store.log("المسح الآلي: ${e.javaClass.simpleName} ${e.message}") }
+            try { if (regionMode) regionLoop() else if (spiralMode) spiralLoop(spX, spY, spN) else if (dragMode) dragLoop() else loop() } catch (e: Throwable) { Store.log("المسح الآلي: ${e.javaClass.simpleName} ${e.message}") }
             Store.log("المسح الآلي: انتهى — آخر حالة: $status")
             running = false
             spiralMode = false
+            regionMode = false
             val last = status
             status = if (last == "متوقف" || last.startsWith("وجدت")) last else "متوقف — $last"
         }.also { it.isDaemon = true; it.start() }
@@ -266,6 +270,17 @@ object AutoScan {
         spiralMode = true
         val r = start()
         if (r != null) spiralMode = false
+        return r
+    }
+
+    /** region scan: points between (x1,y1) and (x2,y2), each visited with a jump and scanned in a spiral of [n] squares (0 = automatic) */
+    fun startRegion(x1: Int, y1: Int, x2: Int, y2: Int, k: Int, n: Int): String? {
+        if (running) return "المسح يعمل — أوقفه أولاً"
+        rg = intArrayOf(x1, y1, x2, y2, k)
+        rgN = n
+        regionMode = true
+        val r = start()
+        if (r != null) regionMode = false
         return r
     }
 
@@ -494,12 +509,8 @@ object AutoScan {
         }
     }
 
-    /**
-     * Square spiral of [n] squares around (cx,cy): anchor once with the coordinate dialog, then one drag per square
-     * (1 east, 1 south, 2 west, 2 north, 3 east, ...). Every drag overlaps the previous view, so nothing between squares is skipped.
-     */
-    private fun spiralLoop(cx: Int, cy: Int, n: Int) {
-        val startMs = System.currentTimeMillis()
+    /** 0: finished; 1: abort the whole task (watched player found, capture dead, service gone, stopped); 2: could not reach the centre (skip it) */
+    private fun spiralAt(cx: Int, cy: Int, n: Int, label: String, startMs: Long): Int {
         val castles0 = Store.stats().castles
         var mprev = Store.stats().mapFrames
         var deadN = 0
@@ -509,21 +520,25 @@ object AutoScan {
         // 1) anchor on the centre
         while (running) {
             val svc = ScanAccessibilityService.inst
-            if (svc == null) { status = "الخدمة غير مفعّلة"; return }
+            if (svc == null) { status = "الخدمة غير مفعّلة"; return 1 }
+            if (checkWatch(svc, startMs)) return 1
             if (!svc.inGame()) { status = "في انتظار ظهور اللعبة في المقدمة…"; sleep(800); continue }
             val s0 = svc.shot()
             if (s0 == null) { status = "تعذّر التقاط الشاشة"; sleep(700); continue }
             if (!s0.landscape) { status = "الشاشة عمودية — يلزم الوضع الأفقي"; sleep(1000); continue }
             if (dialogOpen(s0) || keypadOpen(s0)) { recover(svc); continue }
             if (isCity(s0)) { svc.tap(1195, 745); sleep(3500); continue }
-            status = "المسح الدائري: الانتقال إلى المركز X:$jx Y:$jy…"
+            status = label + "الانتقال إلى X:$jx Y:$jy…"
             if (jump(svc, jx, jy)) break
             slow = 1.8
             downgradeSpeed()
             recover(svc)
-            if (++attempts >= 4) { status = "تعذّر الانتقال إلى مركز المسح الدائري — راجع السجل"; return }
+            if (++attempts >= 3) {
+                Store.log("المسح الدائري: تعذّر الانتقال إلى X:$jx Y:$jy")
+                return 2
+            }
         }
-        if (!running) return
+        if (!running) return 1
         slow = 1.0
         sleep((1500 * speedK()).toInt())
         // 2) spiral out, one drag per square
@@ -537,8 +552,8 @@ object AutoScan {
             for (i in 0 until seg) {
                 if (!running || moves >= total) break
                 val svc = ScanAccessibilityService.inst
-                if (svc == null) { status = "الخدمة غير مفعّلة"; return }
-                if (checkWatch(svc, startMs)) return
+                if (svc == null) { status = "الخدمة غير مفعّلة"; return 1 }
+                if (checkWatch(svc, startMs)) return 1
                 if (!svc.inGame()) { status = "في انتظار ظهور اللعبة في المقدمة…"; sleep(800); continue }
                 val ok = when (dir) {
                     0 -> svc.swipe(east[0], 420, east[1], 420, swipeMs())         // view east
@@ -555,9 +570,9 @@ object AutoScan {
                 mprev = m
                 val why = captureDead()
                 if (why != null) {
-                    if (++deadN >= DEAD_STRIKES) { status = why; Store.log("المسح الدائري: توقف — $why"); return }
+                    if (++deadN >= DEAD_STRIKES) { status = why; Store.log("المسح الدائري: توقف — $why"); return 1 }
                 } else deadN = 0
-                status = "مسح دائري ${moves + 1}/$n مربع حول X:$jx Y:$jy • قلاع جديدة: +${Store.stats().castles - castles0}"
+                status = label + "مسح دائري ${moves + 1}/$n حول X:$jx Y:$jy • قلاع جديدة: +${Store.stats().castles - castles0}"
                 if (moves % 8 == 0) {
                     val sh = svc.shot()
                     if (sh != null && (dialogOpen(sh) || keypadOpen(sh))) recover(svc)
@@ -568,10 +583,64 @@ object AutoScan {
             legs++
             if (legs % 2 == 0) seg++
         }
-        if (running) {
-            status = "اكتمل المسح الدائري ($n مربع) حول X:$jx Y:$jy ✔ — قلاع جديدة: +${Store.stats().castles - castles0}"
+        return if (running) 0 else 1
+    }
+
+    /** one circular scan of [n] squares around (cx,cy) */
+    private fun spiralLoop(cx: Int, cy: Int, n: Int) {
+        val startMs = System.currentTimeMillis()
+        val castles0 = Store.stats().castles
+        if (spiralAt(cx, cy, n, "", startMs) == 0) {
+            status = "اكتمل المسح الدائري ($n مربع) حول X:$cx Y:$cy ✔ — قلاع جديدة: +${Store.stats().castles - castles0}"
             Store.log("المسح الآلي: $status")
         }
+    }
+
+    class RegionPlan(val pts: List<IntArray>, val cw: Int, val ch: Int, val cols: Int, val rows: Int)
+
+    /** splits the rectangle between the first point and the last point into about [k] cells and returns the cell centres in snake order */
+    fun planRegion(x1: Int, y1: Int, x2: Int, y2: Int, k: Int): RegionPlan {
+        val minX = maxOf(MIN_C, minOf(x1, x2))
+        val maxX = minOf(MAX_X, maxOf(x1, x2))
+        val minY = maxOf(MIN_C, minOf(y1, y2))
+        val maxY = minOf(MAX_Y, maxOf(y1, y2))
+        val w = maxOf(maxX - minX, 1)
+        val h = maxOf(maxY - minY, 1)
+        val kk = k.coerceIn(1, 400)
+        val cols = Math.round(Math.sqrt(kk.toDouble() * w / h)).toInt().coerceIn(1, kk)
+        val rows = Math.ceil(kk.toDouble() / cols).toInt().coerceAtLeast(1)
+        val pts = ArrayList<IntArray>()
+        for (r in 0 until rows) for (i in 0 until cols) {
+            val c = if (r % 2 == 0) i else cols - 1 - i              // snake: shortest travel between consecutive points
+            pts.add(intArrayOf(minX + w * (2 * c + 1) / (2 * cols), minY + h * (2 * r + 1) / (2 * rows)))
+        }
+        return RegionPlan(pts, w / cols, h / rows, cols, rows)
+    }
+
+    /** squares per point when the user leaves it on auto: enough squares to cover one cell */
+    fun autoSquares(plan: RegionPlan): Int {
+        val upd = unitsPerDrag.coerceIn(8.0, 40.0)
+        val side = Math.ceil(maxOf(plan.cw, plan.ch) / upd).toInt().coerceIn(3, 20)
+        return side * side
+    }
+
+    /** jump to every point of the region, one after the other, and scan in a spiral around each */
+    private fun regionLoop() {
+        val plan = planRegion(rg[0], rg[1], rg[2], rg[3], rg[4])
+        val n = if (rgN > 0) rgN.coerceIn(2, 400) else autoSquares(plan)
+        val startMs = System.currentTimeMillis()
+        val castles0 = Store.stats().castles
+        var skipped = 0
+        Store.log("مسح المنطقة: ${plan.pts.size} نقطة (${plan.cols}×${plan.rows}) × $n مربع")
+        for ((idx, pt) in plan.pts.withIndex()) {
+            if (!running) return
+            val r = spiralAt(pt[0], pt[1], n, "نقطة ${idx + 1}/${plan.pts.size} • ", startMs)
+            if (r == 1) return
+            if (r == 2) skipped++
+        }
+        status = "اكتمل مسح المنطقة (${plan.pts.size} نقطة × $n مربع) ✔ — قلاع جديدة: +${Store.stats().castles - castles0}" +
+            (if (skipped > 0) " • نقاط تعذّر الانتقال إليها: $skipped" else "")
+        Store.log("المسح الآلي: $status")
     }
 
     /** a watched player's castle was just captured: centre the view on it and stop */
