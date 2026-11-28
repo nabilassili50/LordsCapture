@@ -234,9 +234,9 @@ class MainActivity : Activity() {
         }
 
         // header
-        title = "Lords Capture v1 • update43"
+        title = "Lords Capture v1 • update44"
         root.addView(tv("Lords Capture", 24f, Color.WHITE, true))
-        root.addView(tv("الإصدار: update43", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
+        root.addView(tv("الإصدار: update44", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
         root.addView(tv("التقاط سلبي لبيانات اللعبة — لا يعدّل ولا يرسل شيئاً للعبة", 12f, cMuted).apply {
             setPadding(0, dp(2), 0, dp(12))
         })
@@ -265,6 +265,7 @@ class MainActivity : Activity() {
             if (AutoScan.running) {
                 AutoScan.stop()
             } else {
+                ensureCapture()
                 val msg = AutoScan.start()
                 if (msg != null) {
                     Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
@@ -382,6 +383,7 @@ class MainActivity : Activity() {
                     val n = (if (n0 <= 0) 25 else n0).coerceIn(2, 400)
                     val from = ((planFromEt.text.toString().trim().toIntOrNull() ?: 1) - 1).coerceIn(0, pts.size - 1)
                     prefs.edit().putString("plan_text", planEt.text.toString()).putString("rg_n", n.toString()).apply()
+                    ensureCapture()
                     val msg = AutoScan.startPlan(pts, n, from)
                     Toast.makeText(this, msg ?: "بدأ: ${pts.size - from} نقطة × $n مربع (من النقطة ${from + 1}) — التقدير ~${AutoScan.estimateSeconds(pts.size - from, n) / 60 + 1} دقيقة", Toast.LENGTH_LONG).show()
                 }
@@ -396,6 +398,7 @@ class MainActivity : Activity() {
             } else {
                 val n = (spN.text.toString().trim().toIntOrNull() ?: 100).coerceIn(9, 400)
                 prefs.edit().putString("sp_x", x.toString()).putString("sp_y", y.toString()).putString("sp_n", n.toString()).apply()
+                ensureCapture()
                 val msg = AutoScan.startSpiral(x, y, n)
                 Toast.makeText(this, msg ?: "بدأ المسح الدائري ($n مربع)", Toast.LENGTH_SHORT).show()
             }
@@ -557,17 +560,7 @@ class MainActivity : Activity() {
         }
         ctl.addView(rowOf(
             half(pill("▶  ابدأ الالتقاط", cAccent, Color.WHITE) {
-                prefs.edit()
-                    .putString("prefix", prefixEt.text.toString().trim())
-                    .putString("sport", portEt.text.toString().trim())
-                    .putString("pd", pdPortEt.text.toString().trim())
-                    .apply()
-                saveServerPrefs()
-                val i = Intent(this, CaptureService::class.java)
-                    .putExtra("prefix", prefixEt.text.toString().trim())
-                    .putExtra("serverPort", portEt.text.toString().trim().toIntOrNull() ?: 0)
-                    .putExtra("pdPort", pdPortEt.text.toString().trim().toIntOrNull() ?: 8080)
-                if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
+                startCapture()
             }, true),
             half(pill("■  إيقاف", cField, cRed, cRed) {
                 startService(Intent(this, CaptureService::class.java).setAction(CaptureService.ACTION_STOP))
@@ -994,6 +987,28 @@ class MainActivity : Activity() {
         } else listMoreBtn.visibility = View.GONE
         val wantH = if (membersExpanded) dp(320) else WRAP
         if (listScroll.layoutParams.height != wantH) listScroll.layoutParams = lp(MATCH, wantH, 0f, 0, 0, 0, 0)
+    }
+
+    private fun startCapture() {
+        getSharedPreferences("lc", MODE_PRIVATE).edit()
+            .putString("prefix", prefixEt.text.toString().trim())
+            .putString("sport", portEt.text.toString().trim())
+            .putString("pd", pdPortEt.text.toString().trim())
+            .apply()
+        saveServerPrefs()
+        val i = Intent(this, CaptureService::class.java)
+            .putExtra("prefix", prefixEt.text.toString().trim())
+            .putExtra("serverPort", portEt.text.toString().trim().toIntOrNull() ?: 0)
+            .putExtra("pdPort", pdPortEt.text.toString().trim().toIntOrNull() ?: 8080)
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
+    }
+
+    /** a scan is useless without the capture: start it automatically when its service is not running */
+    private fun ensureCapture() {
+        val st = Store.status
+        if (st.startsWith("يلتقط") || st.startsWith("متصل") || st.startsWith("اتصال") || st.startsWith("PCAPdroid")) return
+        startCapture()
+        Toast.makeText(this, "الالتقاط كان متوقفاً — شغّلته تلقائياً (تأكد أن PCAPdroid شغّال)", Toast.LENGTH_LONG).show()
     }
 
     private fun refresh(forceNow: Boolean = false) {

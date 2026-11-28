@@ -205,6 +205,7 @@ object AutoScan {
     @Volatile private var spiralMode = false
     @Volatile private var regionMode = false
     @Volatile private var planMode = false
+    @Volatile private var scanStartMs = 0L
     @Volatile var planNext = 0            // 0-based index of the next point of the list: stays put when the run stops, so it can be resumed
     private var planPts: List<IntArray> = emptyList()
     private var planSq = 25
@@ -273,6 +274,7 @@ object AutoScan {
         if (Build.VERSION.SDK_INT < 30) return "يلزم أندرويد 11 أو أحدث"
         if (ScanAccessibilityService.inst == null) return "فعّل خدمة «Lords Capture — المسح الآلي» من إعدادات إمكانية الوصول أولاً"
         running = true
+        scanStartMs = System.currentTimeMillis()
         slow = 1.0
         speedFails = 0
         unitsPerDrag = -1.0
@@ -476,7 +478,10 @@ object AutoScan {
     /** null while the capture is alive; otherwise why it looks dead. Silence over the sea is NOT death: only a stopped capture counts. */
     private fun captureDead(): String? {
         val st = Store.status
-        if (st.contains("متوقف")) return "الالتقاط متوقف — شغّل PCAPdroid والالتقاط ($st)"
+        if (st.contains("متوقف")) {
+            if (System.currentTimeMillis() - scanStartMs < 25_000) return null       // the capture may just have been started: give it time to connect
+            return if (st == "متوقف") "خدمة الالتقاط متوقفة — اضغط «ابدأ الالتقاط» ثم شغّل PCAPdroid" else "PCAPdroid متوقف — شغّل الالتقاط فيه ($st)"
+        }
         val last = Store.lastFrameMs
         val idle = System.currentTimeMillis() - last
         if (last > 0 && idle > DEAD_IDLE_MS && !st.startsWith("يلتقط")) return "لا حزم من اللعبة منذ ${idle / 1000} ث (تحقق من PCAPdroid)"
