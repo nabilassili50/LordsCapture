@@ -88,6 +88,8 @@ object Store {
     class Snapshot(val json: String, val items: Int)
 
     @Volatile var lastFrameMs: Long = 0L
+    /** number of map packets seen so far; a plain volatile read (no lock), so the scan can poll it often without starving the UI thread */
+    @Volatile var mapFrameCounter: Long = 0L
     fun onFrame() { frames++; lastFrameMs = System.currentTimeMillis(); version++ }
 
     /** sorted X coordinates of the castles whose packet arrived at or after [sinceSec] (epoch seconds) — used by the drag scan to learn how far the view moved */
@@ -176,6 +178,7 @@ object Store {
         st.count++
         st.bytes += payload.size
         if (parsed > 0) st.parsed++
+        if (key in MAP_OPS_HEX) mapFrameCounter++
     }
 
     @Synchronized

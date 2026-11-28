@@ -133,12 +133,14 @@ class ScanAccessibilityService : AccessibilityService() {
             .build()
         val latch = CountDownLatch(1)
         val ok = BooleanArray(1)
+        val why = arrayOfNulls<String>(1)
         val cb = object : GestureResultCallback() {
             override fun onCompleted(g: GestureDescription?) { ok[0] = true; latch.countDown() }
-            override fun onCancelled(g: GestureDescription?) { latch.countDown() }
+            override fun onCancelled(g: GestureDescription?) { why[0] = "ألغى النظام السحب"; latch.countDown() }
         }
-        main.post { if (!dispatchGesture(gd, cb, null)) latch.countDown() }
-        latch.await((durMs + 3000).toLong(), TimeUnit.MILLISECONDS)
+        main.post { if (!dispatchGesture(gd, cb, null)) { why[0] = "رفض النظام السحب"; latch.countDown() } }
+        if (!latch.await((durMs + 5000).toLong(), TimeUnit.MILLISECONDS)) why[0] = "انتهت مهلة السحب"
+        if (!ok[0]) Store.log("السحب: " + (why[0] ?: "فشل"))
         return ok[0]
     }
 
@@ -222,12 +224,12 @@ object AutoScan {
 
     /** waits until a new map packet arrives (checked every 60 ms) or [budgetMs] ends; returns the map-packet counter */
     private fun waitMap(prev: Long, budgetMs: Int): Long {
-        var m = Store.stats().mapFrames
+        var m = Store.mapFrameCounter
         var waited = 0
         while (m <= prev && waited < budgetMs && running) {
             sleep(60)
             waited += 60
-            m = Store.stats().mapFrames
+            m = Store.mapFrameCounter
         }
         return m
     }
@@ -386,7 +388,7 @@ object AutoScan {
         var visited = 0
         var quiet = 0
         var bad = 0
-        var mprev = Store.stats().mapFrames
+        var mprev = Store.mapFrameCounter
         var deadN = 0
         var lastGood: IntArray? = null   // last coordinates the game accepted: used to tell "rejected coordinates" from "stuck game"
         val startMs = System.currentTimeMillis()
@@ -419,9 +421,9 @@ object AutoScan {
                 // packets arrive asynchronously (and the game does not re-send blocks it already cached), so wait a bit
                 // over sea / empty land / areas the game already cached the server sends nothing: that is normal, never a reason to stop
                 val maxWait = if (quiet >= 3) 3 else 6
-                var m = Store.stats().mapFrames
+                var m = Store.mapFrameCounter
                 var w = 0
-                while (m <= mprev && w < maxWait && running) { sleep(500); w++; m = Store.stats().mapFrames }
+                while (m <= mprev && w < maxWait && running) { sleep(500); w++; m = Store.mapFrameCounter }
                 if (m > mprev) quiet = 0 else quiet++
                 mprev = m
                 lastGood = intArrayOf(jx, jy)
@@ -489,7 +491,7 @@ object AutoScan {
      */
     private fun dragLoop() {
         if (unitsPerDrag <= 0) unitsPerDrag = nominalUnits()
-        var mprev = Store.stats().mapFrames
+        var mprev = Store.mapFrameCounter
         var deadN = 0
         var bad = 0
         var rowFails = 0
@@ -591,7 +593,7 @@ object AutoScan {
     /** 0: finished; 1: abort the whole task (watched player found, capture dead, service gone, stopped); 2: could not reach the centre (skip it) */
     private fun spiralAt(cx: Int, cy: Int, n: Int, label: String, startMs: Long): Int {
         val castles0 = Store.stats().castles
-        var mprev = Store.stats().mapFrames
+        var mprev = Store.mapFrameCounter
         var deadN = 0
         var attempts = 0
         val jx = maxOf(MIN_C, minOf(cx, MAX_X))
@@ -629,6 +631,7 @@ object AutoScan {
         var dir = 0
         var seg = 1
         var legs = 0
+        var swFail = 0
         while (running && moves < total) {
             for (i in 0 until seg) {
                 if (!running || moves >= total) break
@@ -642,7 +645,15 @@ object AutoScan {
                     2 -> svc.swipe(east[1], 420, east[0], 420, swipeMs())          // view west
                     else -> svc.swipe(700, 620 - pv, 700, 620, swipeMs())           // view north
                 }
-                if (!ok) { Store.log("المسح الدائري: فشلت السحبة"); sleep(400); continue }
+                if (!ok) {
+                    Store.log("المسح الدائري: فشلت السحبة")
+                    swFail++
+                    if (swFail == 3) recover(svc)                 // a popup or dialog may be sitting on the map
+                    if (swFail >= 6) { Store.log("المسح الدائري: تخطّي هذه النقطة بعد فشل السحب"); return 2 }
+                    sleep(400)
+                    continue
+                }
+                swFail = 0
                 moves++
                 sleep(settleMs())
                 val m = waitMap(mprev, packetBudget())
