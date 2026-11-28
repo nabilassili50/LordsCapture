@@ -234,9 +234,9 @@ class MainActivity : Activity() {
         }
 
         // header
-        title = "Lords Capture v1 • update41"
+        title = "Lords Capture v1 • update42"
         root.addView(tv("Lords Capture", 24f, Color.WHITE, true))
-        root.addView(tv("الإصدار: update41", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
+        root.addView(tv("الإصدار: update42", 12f, cOrange, true).apply { setPadding(0, dp(2), 0, 0) })
         root.addView(tv("التقاط سلبي لبيانات اللعبة — لا يعدّل ولا يرسل شيئاً للعبة", 12f, cMuted).apply {
             setPadding(0, dp(2), 0, dp(12))
         })
@@ -316,10 +316,10 @@ class MainActivity : Activity() {
         scanCard.addView(ddBtn)
         AutoScan.speed = prefs.getInt("scan_speed", 1)
         val spBtn = pill("", cTile, cText) {}.apply { layoutParams = lp(MATCH, WRAP, 0f, 0, 2, 0, 4) }
-        fun spText() { spBtn.text = "⚡ السرعة: " + arrayOf("عادي", "سريع", "أقصى")[AutoScan.speed.coerceIn(0, 2)] }
+        fun spText() { spBtn.text = "⚡ السرعة: " + arrayOf("عادي", "سريع", "أقصى", "فائق")[AutoScan.speed.coerceIn(0, 3)] }
         spText()
         spBtn.setOnClickListener {
-            AutoScan.speed = (AutoScan.speed.coerceIn(0, 2) + 1) % 3
+            AutoScan.speed = (AutoScan.speed.coerceIn(0, 3) + 1) % 4
             prefs.edit().putInt("scan_speed", AutoScan.speed).apply()
             spText()
         }
@@ -383,7 +383,7 @@ class MainActivity : Activity() {
                     val from = ((planFromEt.text.toString().trim().toIntOrNull() ?: 1) - 1).coerceIn(0, pts.size - 1)
                     prefs.edit().putString("plan_text", planEt.text.toString()).putString("rg_n", n.toString()).apply()
                     val msg = AutoScan.startPlan(pts, n, from)
-                    Toast.makeText(this, msg ?: "بدأ: ${pts.size} نقطة × $n مربع (من النقطة ${from + 1})", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, msg ?: "بدأ: ${pts.size - from} نقطة × $n مربع (من النقطة ${from + 1}) — التقدير ~${AutoScan.estimateSeconds(pts.size - from, n) / 60 + 1} دقيقة", Toast.LENGTH_LONG).show()
                 }
             })
         ))

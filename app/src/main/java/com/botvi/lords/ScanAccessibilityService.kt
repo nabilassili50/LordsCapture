@@ -196,8 +196,7 @@ object AutoScan {
     @Volatile var stopOnWatch = true
     @Volatile var dragMode = true             // true: pan the map by dragging, row after row; false: jump with the coordinate dialog
     @Volatile var dragDir = 1                 // 1: finger moves left -> view moves east (+X); -1 reverses it
-    @Volatile var unitsPerDrag = 16.0         // map units the view moves per drag, learned from the castles that arrive
-    private const val DRAG_PX = 360           // design pixels (of 1280) per drag: ~28% of the screen width, so every drag overlaps the previous view
+    @Volatile var unitsPerDrag = -1.0         // map units one drag moves the view; learned from the castles that arrive (<= 0: not learned yet)
     private const val MAX_DRAGS = 90
     @Volatile var speed = 1                   // 0 normal, 1 fast, 2 max: shortens drag time, settle time and the wait for map packets
     private var speedFails = 0
@@ -212,11 +211,34 @@ object AutoScan {
     private var spX = 0
     private var spY = 0
     private var spN = 100
-    private fun lvl() = speed.coerceIn(0, 2)
-    private fun swipeMs() = intArrayOf(700, 450, 300)[lvl()]
-    private fun settleMs() = intArrayOf(500, 250, 150)[lvl()]
-    private fun packetWait() = intArrayOf(8, 4, 2)[lvl()]           // slices of 250 ms
-    private fun speedK() = doubleArrayOf(1.0, 0.75, 0.55)[lvl()]    // scales the delays inside the coordinate-dialog jump
+    private fun lvl() = speed.coerceIn(0, 3)
+    private fun swipeMs() = intArrayOf(700, 450, 380, 320)[lvl()]
+    private fun settleMs() = intArrayOf(500, 250, 120, 60)[lvl()]
+    private fun packetBudget() = intArrayOf(2000, 1000, 600, 400)[lvl()]       // max ms to wait for a map packet after a drag
+    private fun speedK() = doubleArrayOf(1.0, 0.75, 0.55, 0.42)[lvl()]        // scales the delays inside the coordinate-dialog jump
+    private fun dragPx() = intArrayOf(360, 400, 480, 540)[lvl()]               // faster levels move the map further per drag (fewer drags, still overlapping)
+    private fun dragPxV() = minOf(dragPx(), 450)                                // the screen is shorter than it is wide
+    private fun nominalUnits() = 16.0 * dragPx() / 360.0
+
+    /** waits until a new map packet arrives (checked every 60 ms) or [budgetMs] ends; returns the map-packet counter */
+    private fun waitMap(prev: Long, budgetMs: Int): Long {
+        var m = Store.stats().mapFrames
+        var waited = 0
+        while (m <= prev && waited < budgetMs && running) {
+            sleep(60)
+            waited += 60
+            m = Store.stats().mapFrames
+        }
+        return m
+    }
+
+    /** rough run time for the planner/toast: jump + one drag per square at the current speed */
+    fun estimateSeconds(points: Int, squares: Int): Int {
+        val jumpS = 6.5 * speedK()
+        val stepS = (swipeMs() + settleMs() + 350) / 1000.0
+        return (points * (jumpS + squares * stepS)).toInt()
+    }
+
     /** a failed jump at a fast setting usually means the game needed more time: go one level slower */
     private fun downgradeSpeed() {
         if (speed > 0 && ++speedFails >= 2) {
@@ -251,6 +273,7 @@ object AutoScan {
         running = true
         slow = 1.0
         speedFails = 0
+        unitsPerDrag = -1.0
         fails.clear()
         status = "يبدأ…"
         th = Thread {
@@ -465,6 +488,7 @@ object AutoScan {
      * then dragged east in overlapping steps until the east edge. Nothing here depends on land or sea; silence is not a reason to stop.
      */
     private fun dragLoop() {
+        if (unitsPerDrag <= 0) unitsPerDrag = nominalUnits()
         var mprev = Store.stats().mapFrames
         var deadN = 0
         var bad = 0
@@ -512,7 +536,7 @@ object AutoScan {
             rows++
             var x = jx.toDouble()
             ScanPlanner.markVisited(jx, jy)
-            sleep((1500 * speedK()).toInt())
+            mprev = waitMap(mprev, (1200 * speedK()).toInt())
             // 2) drag east across the row
             var drags = 0
             var edgePrev = -1
@@ -522,7 +546,7 @@ object AutoScan {
                 if (checkWatch(svc, startMs)) return
                 if (!svc.inGame()) { status = "في انتظار ظهور اللعبة في المقدمة…"; sleep(800); continue }
                 val t0 = System.currentTimeMillis()
-                if (!svc.swipe(950, 420, 950 - dragDir * DRAG_PX, 420, swipeMs())) {
+                if (!svc.swipe(950, 420, 950 - dragDir * dragPx(), 420, swipeMs())) {
                     Store.log("المسح الآلي: فشلت السحبة")
                     if (++swipeFails > 15) { status = "فشل متكرر في السحب — أوقفت المسح، راجع السجل"; return }
                     break
@@ -531,10 +555,7 @@ object AutoScan {
                 drags++
                 sincePrev++
                 sleep(settleMs())   // let the map settle
-                var m = Store.stats().mapFrames
-                var w = 0
-                val maxWait = if (quiet >= 3) maxOf(1, packetWait() / 2) else packetWait()
-                while (m <= mprev && w < maxWait && running) { sleep(250); w++; m = Store.stats().mapFrames }
+                val m = waitMap(mprev, if (quiet >= 3) packetBudget() / 2 else packetBudget())
                 if (m > mprev) { quiet = 0; noMap = 0 } else { quiet++; noMap++ }
                 mprev = m
                 // learn how far one drag moves the view: the right edge of the castles that just arrived
@@ -598,10 +619,12 @@ object AutoScan {
         }
         if (!running) return 1
         slow = 1.0
-        sleep((1500 * speedK()).toInt())
+        mprev = waitMap(mprev, (1200 * speedK()).toInt())
         // 2) spiral out, one drag per square
         val total = maxOf(n, 1) - 1
-        val east = if (dragDir == 1) intArrayOf(950, 590) else intArrayOf(590, 950)   // finger x: start, end
+        val px = dragPx()
+        val pv = dragPxV()
+        val east = if (dragDir == 1) intArrayOf(950, 950 - px) else intArrayOf(950 - px, 950)   // finger x: start, end
         var moves = 0
         var dir = 0
         var seg = 1
@@ -615,16 +638,14 @@ object AutoScan {
                 if (!svc.inGame()) { status = "في انتظار ظهور اللعبة في المقدمة…"; sleep(800); continue }
                 val ok = when (dir) {
                     0 -> svc.swipe(east[0], 420, east[1], 420, swipeMs())         // view east
-                    1 -> svc.swipe(700, 620, 700, 260, swipeMs())                   // view south
+                    1 -> svc.swipe(700, 620, 700, 620 - pv, swipeMs())              // view south
                     2 -> svc.swipe(east[1], 420, east[0], 420, swipeMs())          // view west
-                    else -> svc.swipe(700, 260, 700, 620, swipeMs())                // view north
+                    else -> svc.swipe(700, 620 - pv, 700, 620, swipeMs())           // view north
                 }
                 if (!ok) { Store.log("المسح الدائري: فشلت السحبة"); sleep(400); continue }
                 moves++
                 sleep(settleMs())
-                var m = Store.stats().mapFrames
-                var w = 0
-                while (m <= mprev && w < packetWait() && running) { sleep(250); w++; m = Store.stats().mapFrames }
+                val m = waitMap(mprev, packetBudget())
                 mprev = m
                 val why = captureDead()
                 if (why != null) {
@@ -677,7 +698,7 @@ object AutoScan {
 
     /** squares per point when the user leaves it on auto: enough squares to cover one cell */
     fun autoSquares(plan: RegionPlan): Int {
-        val upd = unitsPerDrag.coerceIn(8.0, 40.0)
+        val upd = (if (unitsPerDrag > 0) unitsPerDrag else nominalUnits()).coerceIn(8.0, 60.0)
         val side = Math.ceil(maxOf(plan.cw, plan.ch) / upd).toInt().coerceIn(3, 20)
         return side * side
     }
@@ -718,13 +739,14 @@ object AutoScan {
     private fun jump(svc: ScanAccessibilityService, x: Int, y: Int): Boolean {
         val k = slow * speedK()
         fun d(ms: Int) = (ms * k).toInt()
+        fun dk(ms: Int) = (ms * maxOf(k, 0.6)).toInt()      // spacing between digit taps stays safe even at the fastest level
         // 1) magnifier -> Y field -> digits -> OK
         val g1 = ArrayList<IntArray>()
         g1.add(intArrayOf(683, 93, 0))
         var t = d(650)
         g1.add(intArrayOf(476, 298, t))
         t += d(500)
-        for (c in y.toString()) { val p = KEYS[c] ?: return false; g1.add(intArrayOf(p[0], p[1], t)); t += d(140) }
+        for (c in y.toString()) { val p = KEYS[c] ?: return false; g1.add(intArrayOf(p[0], p[1], t)); t += dk(140) }
         g1.add(intArrayOf(363, 543, t + d(20)))
         if (!svc.gesture(g1)) return false
         if (!running) return false
@@ -736,7 +758,7 @@ object AutoScan {
         val g2 = ArrayList<IntArray>()
         g2.add(intArrayOf(612, 298, 0))
         t = d(500)
-        for (c in x.toString()) { val p = KEYS[c] ?: return false; g2.add(intArrayOf(p[0], p[1], t)); t += d(140) }
+        for (c in x.toString()) { val p = KEYS[c] ?: return false; g2.add(intArrayOf(p[0], p[1], t)); t += dk(140) }
         g2.add(intArrayOf(363, 543, t + d(20)))
         g2.add(intArrayOf(637, 444, t + d(20) + d(380)))
         if (!svc.gesture(g2)) return false
